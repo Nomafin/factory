@@ -8,6 +8,9 @@ from typing import Callable
 
 logger = logging.getLogger(__name__)
 
+# 10MB buffer limit for subprocess stdout (Claude can output large JSON lines)
+STREAM_BUFFER_LIMIT = 10 * 1024 * 1024
+
 
 @dataclass
 class RunningAgent:
@@ -74,6 +77,7 @@ class AgentRunner:
             cwd=str(workdir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=STREAM_BUFFER_LIMIT,
         )
 
         agent = RunningAgent(task_id=task_id, process=process, workdir=workdir)
