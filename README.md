@@ -8,6 +8,7 @@ AI agent orchestrator that manages autonomous Claude-powered agents to execute t
 - **Four agent types**: coder, reviewer, researcher, and devops — each with tailored system prompts and tool access
 - **Plane integration** for issue tracking — webhook-driven task creation and status updates
 - **Isolated workspaces** via git worktrees so agents work on separate branches without interference
+- **Agent memory** via SurrealDB — agents learn from past task outcomes using full-text search (vector search planned)
 - **SQLite database** for task persistence and logging
 - **REST API** for task management and monitoring
 
@@ -22,12 +23,12 @@ Plane webhook / REST API
    │ (FastAPI) │     │            │     │ (Claude Code) │
    └──────────┘     └─────┬──────┘     └──────────────┘
                           │
-                    ┌─────┴──────┐
-                    │            │
-               ┌────▼───┐  ┌────▼──────┐
-               │   DB   │  │RepoManager│
-               │(SQLite)│  │(worktrees)│
-               └────────┘  └───────────┘
+                ┌─────────┼──────────┐
+                │         │          │
+           ┌────▼───┐ ┌───▼─────┐ ┌─▼──────────┐
+           │   DB   │ │  Repo   │ │AgentMemory │
+           │(SQLite)│ │ Manager │ │(SurrealDB) │
+           └────────┘ └─────────┘ └────────────┘
 ```
 
 ## Project Structure
@@ -49,6 +50,7 @@ factory/
     │   ├── orchestrator.py    # Core task processing
     │   ├── runner.py          # Claude Code CLI process management
     │   ├── workspace.py       # Git clone and worktree management
+    │   ├── memory.py          # Agent memory (SurrealDB)
     │   ├── db.py              # SQLite schema and queries
     │   ├── models.py          # Pydantic models
     │   └── config.py          # Configuration classes
@@ -61,6 +63,7 @@ factory/
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and available on `PATH`
 - A GitHub personal access token
 - An Anthropic API key
+- Docker (for SurrealDB — optional, memory features degrade gracefully)
 
 ## Setup
 
@@ -82,7 +85,39 @@ factory/
 
 3. **Edit `config.yml`** to define your repositories, agent templates, concurrency limits, and Plane integration settings.
 
-4. **Start the server:**
+4. **Set up SurrealDB** (optional — agent memory):
+
+   ```bash
+   # Generate a password
+   SURREALDB_PASS=$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)
+
+   # Create data directory and start SurrealDB
+   mkdir -p surrealdb
+   docker run -d --name surrealdb --restart always \
+     -p 8200:8000 \
+     -v $(pwd)/surrealdb:/data \
+     surrealdb/surrealdb:latest start \
+     --user root --pass "$SURREALDB_PASS" \
+     rocksdb:/data/factory.db
+
+   # Fix permissions (container runs as UID 65532)
+   chown -R 65532:65532 surrealdb
+
+   # Restart to apply permissions
+   docker restart surrealdb
+   ```
+
+   Add to `.env`:
+
+   ```
+   SURREALDB_URL=ws://localhost:8200/rpc
+   SURREALDB_USER=root
+   SURREALDB_PASS=<your-generated-password>
+   ```
+
+   The schema is created automatically on first startup. If the env vars are not set or SurrealDB is unreachable, the orchestrator runs normally without memory.
+
+5. **Start the server:**
 
    ```bash
    cd orchestrator
@@ -167,6 +202,17 @@ queued → cancelled
 4. **Done** — task completed
 5. **Failed** — agent exited with an error
 6. **Cancelled** — task cancelled before or during execution
+
+## Agent Memory
+
+When SurrealDB is configured, agents build persistent memory across tasks:
+
+- **After each task** — the orchestrator stores the task title, repo, outcome (success/failed), and a summary of the agent's output
+- **Before each task** — the orchestrator queries SurrealDB for relevant past memories (matched by repo + full-text search on the task description) and injects them into the agent's prompt
+
+This lets agents learn from previous runs: what approaches worked, what failed, and repo-specific patterns.
+
+Currently uses **BM25 full-text search** on task summaries. The schema is designed for adding **vector search** (embeddings + HNSW index) later without migration.
 
 ## Agent Types
 
