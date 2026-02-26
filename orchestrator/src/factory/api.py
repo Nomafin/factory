@@ -10,7 +10,10 @@ from pydantic import BaseModel
 
 from factory.db import Database
 from factory.deps import get_db, get_orchestrator
-from factory.models import AgentInfo, CodeReviewCreate, Task, TaskCreate, TaskStatus, Workflow, WorkflowCreate, WorkflowStatus
+from factory.models import (
+    AgentHandoff, AgentInfo, CodeReviewCreate, HandoffCreate,
+    Task, TaskCreate, TaskStatus, Workflow, WorkflowCreate, WorkflowStatus,
+)
 from factory.orchestrator import Orchestrator
 from factory.plane import parse_webhook_event
 
@@ -210,6 +213,64 @@ async def create_code_review_workflow(
     if not workflow:
         raise HTTPException(status_code=503, detail="Failed to start code_review workflow")
     return workflow
+
+
+# ── Handoff endpoints ──────────────────────────────────────────────────
+
+
+@router.get("/tasks/{task_id}/handoffs", response_model=list[AgentHandoff])
+async def get_task_handoffs(
+    task_id: int,
+    direction: str = Query("to", description="'to' for inputs, 'from' for outputs"),
+    db: Database = Depends(get_db),
+):
+    """Get handoffs linked to a task.
+
+    - direction=to  → handoffs that feed *into* this task (inputs)
+    - direction=from → handoffs produced *by* this task (outputs)
+    """
+    task = await db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if direction == "from":
+        return await db.get_handoffs_from_task(task_id)
+    return await db.get_handoffs_for_task(task_id)
+
+
+@router.get("/workflows/{workflow_id}/handoffs", response_model=list[AgentHandoff])
+async def get_workflow_handoffs(
+    workflow_id: int,
+    db: Database = Depends(get_db),
+):
+    """Get all handoffs within a workflow."""
+    workflow = await db.get_workflow(workflow_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return await db.get_handoffs_for_workflow(workflow_id)
+
+
+@router.post("/handoffs", response_model=AgentHandoff, status_code=201)
+async def create_handoff(
+    body: HandoffCreate,
+    db: Database = Depends(get_db),
+):
+    """Manually create a handoff record (e.g. for external integrations)."""
+    task = await db.get_task(body.from_task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Source task {body.from_task_id} not found")
+    if body.to_task_id:
+        to_task = await db.get_task(body.to_task_id)
+        if not to_task:
+            raise HTTPException(status_code=404, detail=f"Target task {body.to_task_id} not found")
+    return await db.create_handoff(body)
+
+
+@router.get("/handoffs/{handoff_id}", response_model=AgentHandoff)
+async def get_handoff(handoff_id: int, db: Database = Depends(get_db)):
+    handoff = await db.get_handoff(handoff_id)
+    if not handoff:
+        raise HTTPException(status_code=404, detail="Handoff not found")
+    return handoff
 
 
 @router.get("/agents", response_model=list[AgentInfo])
