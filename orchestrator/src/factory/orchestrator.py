@@ -297,6 +297,9 @@ class Orchestrator:
         return cancelled
 
     async def close(self):
+        # Kill all running agents on shutdown
+        for task_id in list(self.runner.get_running_agents()):
+            await self.runner.cancel_agent(task_id)
         if self.plane:
             await self.plane.close()
         if self.notifier:
