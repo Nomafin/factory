@@ -1,3 +1,9 @@
+import hashlib
+import hmac
+import logging
+import os
+import subprocess
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from factory.db import Database
@@ -5,6 +11,8 @@ from factory.deps import get_db, get_orchestrator
 from factory.models import AgentInfo, Task, TaskCreate, TaskStatus
 from factory.orchestrator import Orchestrator
 from factory.plane import parse_webhook_event
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -30,8 +38,7 @@ async def create_task(
             )
             body.plane_issue_id = issue_id
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning("Failed to create Plane issue: %s", e)
+            logger.warning("Failed to create Plane issue: %s", e)
 
     task = await db.create_task(body)
     if auto_run:
@@ -123,3 +130,42 @@ async def plane_webhook(request: Request, db: Database = Depends(get_db), orch: 
                 return {"status": "cancelled", "task_id": task.id}
 
     return {"status": "ok"}
+
+
+def _verify_github_signature(payload: bytes, signature: str, secret: str) -> bool:
+    expected = "sha256=" + hmac.new(
+        secret.encode(), payload, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+@router.post("/webhooks/github")
+async def github_webhook(request: Request):
+    secret = os.environ.get("GITHUB_WEBHOOK_SECRET", "")
+    if not secret:
+        raise HTTPException(status_code=500, detail="Webhook secret not configured")
+
+    # Verify signature
+    signature = request.headers.get("X-Hub-Signature-256", "")
+    body = await request.body()
+    if not _verify_github_signature(body, signature, secret):
+        raise HTTPException(status_code=403, detail="Invalid signature")
+
+    payload = await request.json()
+
+    # Only deploy on pushes to main
+    ref = payload.get("ref", "")
+    if ref != "refs/heads/main":
+        return {"status": "ignored", "reason": f"not main branch: {ref}"}
+
+    # Spawn deploy.sh detached so it survives orchestrator restart
+    deploy_script = "/opt/factory/deploy.sh"
+    subprocess.Popen(
+        [deploy_script],
+        stdout=open("/opt/factory/deploy.log", "a"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    logger.info("Deploy triggered by push to main (spawned deploy.sh)")
+
+    return {"status": "deploy_started"}
