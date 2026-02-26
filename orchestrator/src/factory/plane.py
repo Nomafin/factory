@@ -2,7 +2,6 @@ import hashlib
 import hmac
 import logging
 import re
-from enum import Enum
 
 import httpx
 
@@ -11,17 +10,21 @@ logger = logging.getLogger(__name__)
 AGENT_TYPES = {"coder", "reviewer", "researcher", "devops"}
 
 
-class PlaneAction(str, Enum):
-    CREATE = "create"
-    UPDATE = "update"
-    DELETE = "delete"
+def _normalize_action(raw: str) -> str:
+    """Normalize Plane webhook actions (created->create, updated->update, deleted->delete)."""
+    mapping = {
+        "created": "create",
+        "updated": "update",
+        "deleted": "delete",
+    }
+    return mapping.get(raw, raw)
 
 
 class PlaneEvent:
     def __init__(
         self,
         event_type: str,
-        action: PlaneAction,
+        action: str,
         issue_id: str = "",
         issue_title: str = "",
         description: str = "",
@@ -61,7 +64,7 @@ def parse_webhook_event(payload: dict) -> PlaneEvent:
 
     return PlaneEvent(
         event_type=payload.get("event", ""),
-        action=PlaneAction(payload.get("action", "create")),
+        action=_normalize_action(payload.get("action", "create")),
         issue_id=data.get("id", ""),
         issue_title=data.get("name", ""),
         description=description,

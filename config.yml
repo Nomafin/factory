@@ -2,17 +2,26 @@ max_concurrent_agents: 3
 agent_timeout_minutes: 30
 
 plane:
-  base_url: "https://plane.reitti.6a.fi"
-  api_key: ""
+  base_url: "https://plane.6a.fi"
+  api_key: "PLANE_API_KEY_REDACTED"
   workspace_slug: "factory"
-  project_id: ""
+  project_id: "b3acbb5e-4f58-47f5-90b4-1873598990d1"
+  states:
+    in_progress: "5c606772-721d-4b6b-9e19-af6405c88f7d"
+    in_review: "92d821b7-88bd-489e-9aff-35a76d12b9b7"
+    done: "a68ac9c1-3785-4ccf-b031-da0da7c5f4f0"
+    failed: "2d058268-c4bd-4bfa-ba2d-440923ff69b8"
+    cancelled: "7790f54f-4ea7-4de0-bade-51c2536bed5b"
 
 orchestrator:
   host: "0.0.0.0"
   port: 8100
   auth_token: ""
 
-repos: {}
+repos:
+  factory:
+    url: "https://github.com/Nomafin/Factory.git"
+    default_agent: "coder"
 
 agent_templates:
   coder:

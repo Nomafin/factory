@@ -79,6 +79,14 @@ class Database:
         row = await cursor.fetchone()
         return _row_to_task(row) if row else None
 
+    async def find_by_plane_issue_id(self, plane_issue_id: str) -> Task | None:
+        cursor = await self._db.execute(
+            "SELECT * FROM tasks WHERE plane_issue_id = ? ORDER BY created_at DESC LIMIT 1",
+            (plane_issue_id,),
+        )
+        row = await cursor.fetchone()
+        return _row_to_task(row) if row else None
+
     async def list_tasks(self, status: TaskStatus | None = None) -> list[Task]:
         if status:
             cursor = await self._db.execute(
