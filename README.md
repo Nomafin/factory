@@ -46,12 +46,15 @@ factory/
     ├── pyproject.toml
     ├── src/factory/
     │   ├── main.py            # FastAPI app entry point
-    │   ├── api.py             # REST API routes
+    │   ├── api.py             # REST API routes + webhooks
     │   ├── orchestrator.py    # Core task processing
     │   ├── runner.py          # Claude Code CLI process management
     │   ├── workspace.py       # Git clone and worktree management
     │   ├── memory.py          # Agent memory (SurrealDB)
+    │   ├── plane.py           # Plane webhook parsing + API client
+    │   ├── notifier.py        # Telegram notifications
     │   ├── db.py              # SQLite schema and queries
+    │   ├── deps.py            # FastAPI dependency injection
     │   ├── models.py          # Pydantic models
     │   └── config.py          # Configuration classes
     └── tests/
@@ -213,6 +216,101 @@ When SurrealDB is configured, agents build persistent memory across tasks:
 This lets agents learn from previous runs: what approaches worked, what failed, and repo-specific patterns.
 
 Currently uses **BM25 full-text search** on task summaries. The schema is designed for adding **vector search** (embeddings + HNSW index) later without migration.
+
+## Plane Integration
+
+Factory integrates with [Plane](https://plane.so) (self-hosted or cloud) for issue tracking. When connected, issues moved to "Queued" in Plane automatically trigger agent runs, and the orchestrator updates issue states and posts progress comments as agents work.
+
+### Setup
+
+1. **Get your Plane API key** from your Plane instance under Settings > API Tokens.
+
+2. **Find your project's state IDs.** Each Plane project has workflow states with UUIDs. You need the IDs for the states Factory will use. You can find them via the Plane API:
+
+   ```bash
+   curl -H "X-API-Key: $PLANE_API_KEY" \
+     https://your-plane.example.com/api/v1/workspaces/YOUR_SLUG/projects/PROJECT_ID/states/
+   ```
+
+3. **Add the Plane section to `config.yml`:**
+
+   ```yaml
+   plane:
+     base_url: "https://your-plane.example.com"
+     api_key: "plane_api_..."
+     workspace_slug: "your-workspace"
+     project_id: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+     default_repo: "my-repo"  # fallback when issue has no repo: label
+     states:
+       queued: "state-uuid-for-queued"
+       in_progress: "state-uuid-for-in-progress"
+       in_review: "state-uuid-for-in-review"
+       done: "state-uuid-for-done"
+       failed: "state-uuid-for-failed"
+       cancelled: "state-uuid-for-cancelled"
+   ```
+
+4. **Set up a webhook in Plane** pointing to your Factory instance:
+
+   - URL: `https://your-domain.com/factory/webhooks/plane` (or `http://localhost:8100/api/webhooks/plane` for local dev)
+   - Trigger on: Issue events
+
+### How it works
+
+- **Issue created/moved to "Queued"** — Factory creates a task and starts an agent
+- **Issue moved to "Cancelled"** — Factory cancels the running agent
+- **Agent starts** — Plane issue moves to "In Progress", comment posted with branch name
+- **Agent posts progress** — periodic comments with agent output summaries
+- **Agent succeeds** — issue moves to "In Review", comment with PR link
+- **Agent fails** — issue moves to "Failed", comment with error details
+
+### Issue labels
+
+Use Plane labels to control which repo and agent type are used:
+
+- `repo:my-repo` — target repository (must match a key in `config.yml` repos)
+- `coder` / `reviewer` / `researcher` / `devops` — agent type (defaults to `coder`)
+
+If no `repo:` label is set, the `default_repo` from config is used.
+
+## Telegram Notifications
+
+Factory can send real-time notifications to a Telegram chat when agents start, complete, or fail.
+
+### Setup
+
+1. **Create a Telegram bot** via [@BotFather](https://t.me/BotFather):
+   - Send `/newbot` and follow the prompts
+   - Copy the bot token (e.g. `1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ`)
+
+2. **Get your chat ID:**
+   - Add the bot to your group chat (or start a DM with it)
+   - Send a message in the chat
+   - Fetch updates to find the chat ID:
+     ```bash
+     curl https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
+     ```
+   - Look for `"chat":{"id":...}` in the response — that's your chat ID
+
+3. **Add to `config.yml`:**
+
+   ```yaml
+   telegram:
+     bot_token: "1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ"
+     chat_id: "your-chat-id"
+   ```
+
+### Notifications sent
+
+| Event | Message |
+|-------|---------|
+| Agent started | Task title + branch name |
+| Agent completed | Task title + PR URL |
+| Agent failed | Task title + error snippet |
+| Agent cancelled | Task title |
+| Orphaned task recovered | Task title (on orchestrator restart) |
+
+Both Plane and Telegram are optional — if their config sections are empty or missing, the orchestrator works without them.
 
 ## Agent Types
 
