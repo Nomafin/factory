@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import yaml
@@ -49,4 +50,12 @@ class Config(BaseModel):
 def load_config(path: Path) -> Config:
     with open(path) as f:
         data = yaml.safe_load(f) or {}
-    return Config(**data)
+    config = Config(**data)
+
+    # Allow environment variables to override secrets so they stay out of config.yml
+    if env_plane_key := os.environ.get("PLANE_API_KEY"):
+        config.plane.api_key = env_plane_key
+    if env_auth_token := os.environ.get("FACTORY_AUTH_TOKEN"):
+        config.orchestrator.auth_token = env_auth_token
+
+    return config

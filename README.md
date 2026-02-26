@@ -34,7 +34,7 @@ Plane webhook / REST API
 
 ```
 factory/
-├── config.yml                 # Main configuration
+├── config.yml.example         # Configuration template (copy to config.yml)
 ├── .env.example               # Environment variable template
 ├── prompts/                   # Agent system prompts
 │   ├── coder.md
@@ -64,30 +64,16 @@ factory/
 
 ## Setup
 
-1. **Clone the repository and install dependencies:**
+See [SETUP.md](SETUP.md) for a detailed step-by-step guide.
 
-   ```bash
-   cd orchestrator
-   pip install -e .
-   ```
+Quick start:
 
-2. **Configure environment variables** by copying `.env.example` to `.env`:
-
-   ```
-   ANTHROPIC_API_KEY=sk-ant-...
-   GITHUB_TOKEN=ghp_...
-   FACTORY_AUTH_TOKEN=your-secret-token
-   PLANE_API_KEY=pl_...
-   ```
-
-3. **Edit `config.yml`** to define your repositories, agent templates, concurrency limits, and Plane integration settings.
-
-4. **Start the server:**
-
-   ```bash
-   cd orchestrator
-   uvicorn factory.main:app --host 0.0.0.0 --port 8100
-   ```
+```bash
+cp .env.example .env              # Add your API keys
+cp config.yml.example config.yml  # Configure repos, agents, and Plane
+cd orchestrator && pip install -e .
+uvicorn factory.main:app --host 0.0.0.0 --port 8100
+```
 
 ## Configuration
 
