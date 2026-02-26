@@ -183,39 +183,54 @@ class Orchestrator:
             except Exception as e:
                 logger.warning("Memory recall failed for task %d: %s", task_id, e)
 
-        prompt = self._build_prompt(task.title, task.description, memories=memories)
-        system_prompt = load_prompt(template.system_prompt_file, self.base_dir)
+        try:
+            prompt = self._build_prompt(task.title, task.description, memories=memories)
+            system_prompt = load_prompt(template.system_prompt_file, self.base_dir)
 
-        await self.db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
-        await self._update_plane_state(
-            task.plane_issue_id, self.config.plane.states.in_progress,
-            f"Agent started on branch <code>{branch_name}</code>"
-        )
-        await self._notify(f"\U0001f527 Agent started: {task.title}\nBranch: {branch_name}")
-
-        self._output_counts[task_id] = 0
-        self._output_buffers[task_id] = []
-
-        started = await self.runner.start_agent(
-            task_id=task_id,
-            prompt=prompt,
-            workdir=wt_path,
-            allowed_tools=template.allowed_tools,
-            system_prompt=system_prompt,
-            on_output=self._on_agent_output,
-            on_complete=self._on_agent_complete,
-        )
-
-        if not started:
-            await self.db.update_task_status(task_id, TaskStatus.FAILED, error="Failed to start agent")
+            await self.db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
             await self._update_plane_state(
-                task.plane_issue_id, self.config.plane.states.failed,
-                "Failed to start agent process"
+                task.plane_issue_id, self.config.plane.states.in_progress,
+                f"Agent started on branch <code>{branch_name}</code>"
             )
-            await self._notify(f"\u274c Task failed: {task.title}\nCould not start agent")
-            return False
+            await self._notify(f"\U0001f527 Agent started: {task.title}\nBranch: {branch_name}")
 
-        return True
+            self._output_counts[task_id] = 0
+            self._output_buffers[task_id] = []
+
+            started = await self.runner.start_agent(
+                task_id=task_id,
+                prompt=prompt,
+                workdir=wt_path,
+                allowed_tools=template.allowed_tools,
+                system_prompt=system_prompt,
+                on_output=self._on_agent_output,
+                on_complete=self._on_agent_complete,
+            )
+
+            if not started:
+                await self.db.update_task_status(task_id, TaskStatus.FAILED, error="Failed to start agent")
+                await self._update_plane_state(
+                    task.plane_issue_id, self.config.plane.states.failed,
+                    "Failed to start agent process"
+                )
+                await self._notify(f"\u274c Task failed: {task.title}\nCould not start agent")
+                return False
+
+            return True
+        except Exception as e:
+            logger.exception("Failed to launch agent for task %d", task_id)
+            try:
+                await self.db.update_task_status(
+                    task_id, TaskStatus.FAILED, error=f"Agent launch error: {e}"
+                )
+                await self._update_plane_state(
+                    task.plane_issue_id, self.config.plane.states.failed,
+                    f"Agent launch error: {e}"
+                )
+                await self._notify(f"\u274c Task failed: {task.title}\nAgent launch error")
+            except Exception:
+                logger.exception("Failed to update status after agent launch error for task %d", task_id)
+            return False
 
     def _build_prompt(
         self, title: str, description: str, memories: list[dict] | None = None

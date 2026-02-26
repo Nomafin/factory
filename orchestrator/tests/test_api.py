@@ -91,6 +91,46 @@ async def test_cancel_task(client):
     assert resp.status_code == 200
 
 
+async def test_create_task_auto_run(client, mock_orchestrator):
+    resp = await client.post("/api/tasks?auto_run=true", json={
+        "title": "Auto-run task",
+        "repo": "myapp",
+    })
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["title"] == "Auto-run task"
+    assert data["id"] is not None
+    mock_orchestrator.process_task.assert_awaited_once_with(data["id"])
+
+
+async def test_create_task_auto_run_process_failure(client, mock_orchestrator):
+    """Task creation should return 201 even when process_task returns False."""
+    mock_orchestrator.process_task = AsyncMock(return_value=False)
+
+    resp = await client.post("/api/tasks?auto_run=true", json={
+        "title": "Failing auto-run",
+        "repo": "myapp",
+    })
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["title"] == "Failing auto-run"
+    assert data["id"] is not None
+
+
+async def test_create_task_auto_run_process_exception(client, mock_orchestrator):
+    """Task creation should return 201 even when process_task raises an exception."""
+    mock_orchestrator.process_task = AsyncMock(side_effect=RuntimeError("agent binary not found"))
+
+    resp = await client.post("/api/tasks?auto_run=true", json={
+        "title": "Exception auto-run",
+        "repo": "myapp",
+    })
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["title"] == "Exception auto-run"
+    assert data["id"] is not None
+
+
 async def test_list_agents_empty(client):
     resp = await client.get("/api/agents")
     assert resp.status_code == 200
