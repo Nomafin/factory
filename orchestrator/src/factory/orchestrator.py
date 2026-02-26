@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 from factory.config import Config
@@ -11,7 +12,7 @@ from factory.workspace import RepoManager
 
 logger = logging.getLogger(__name__)
 
-FACTORY_ROOT = Path("/opt/factory")
+FACTORY_ROOT = Path(os.environ.get("FACTORY_ROOT", Path(__file__).resolve().parents[3]))
 
 
 class Orchestrator:
