@@ -43,10 +43,10 @@ ORDER BY created_at DESC
 LIMIT $limit;
 """
 
-VECTOR_RECALL_QUERY = """\
+VECTOR_RECALL_QUERY_TEMPLATE = """\
 SELECT *, vector::distance::knn() AS distance
 FROM memory
-WHERE repo = $repo AND embedding <|$limit,100|> $embedding
+WHERE repo = $repo AND embedding <|{limit},100|> $embedding
 ORDER BY distance;
 """
 
@@ -132,8 +132,8 @@ class AgentMemory:
             embedding = await self._embed(query)
             if embedding:
                 rows = await self._db.query(
-                    VECTOR_RECALL_QUERY,
-                    {"repo": repo, "embedding": embedding, "limit": limit},
+                    VECTOR_RECALL_QUERY_TEMPLATE.format(limit=int(limit)),
+                    {"repo": repo, "embedding": embedding},
                 )
                 results = self._parse_results(rows, limit)
                 if results:
