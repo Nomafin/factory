@@ -18,7 +18,7 @@ DEFINE FIELD IF NOT EXISTS created_at ON memory TYPE datetime DEFAULT time::now(
 
 DEFINE INDEX IF NOT EXISTS idx_memory_repo ON memory FIELDS repo;
 DEFINE ANALYZER IF NOT EXISTS memory_analyzer TOKENIZERS blank, class FILTERS lowercase, snowball(english);
-DEFINE INDEX IF NOT EXISTS idx_memory_search ON memory FIELDS summary SEARCH ANALYZER memory_analyzer BM25;
+DEFINE INDEX IF NOT EXISTS idx_memory_search ON memory FIELDS summary FULLTEXT ANALYZER memory_analyzer BM25;
 """
 
 RECALL_QUERY = """\
