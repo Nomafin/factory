@@ -1,5 +1,5 @@
 # Factory Agent Farm Design
-<!-- Auto-deploy test -->
+<!-- Auto-deploy: verified -->
 
 ## Overview
 
