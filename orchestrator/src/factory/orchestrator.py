@@ -206,7 +206,18 @@ class Orchestrator:
         parts = [f"Task: {title}"]
         if description:
             parts.append(f"\n{description}")
-        parts.append("\nWhen done, commit your changes with a descriptive message.")
+        parts.append("""
+When done, commit your changes with a descriptive message.
+
+After committing, end your response with a summary in exactly this format:
+
+## Summary
+What was done and why.
+
+## Changes
+- Bullet points of key changes made.
+
+This summary will be used as the PR description, so write it for a human reviewer.""")
         return "\n".join(parts)
 
     def _on_agent_output(self, task_id: int, content: str):
