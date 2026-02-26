@@ -74,7 +74,10 @@ async def plane_webhook(request: Request, db: Database = Depends(get_db), orch: 
     if event.event_type != "issue":
         return {"status": "ignored"}
 
-    if event.state_name == "Queued" and event.action.value in ("create", "update"):
+    if event.state_name == "Queued" and event.action in ("create", "update"):
+        existing = await db.find_by_plane_issue_id(event.issue_id) if event.issue_id else None
+        if existing and existing.status in (TaskStatus.QUEUED, TaskStatus.IN_PROGRESS):
+            return {"status": "already_exists", "task_id": existing.id}
         task = await db.create_task(TaskCreate(
             title=event.issue_title,
             description=event.description,

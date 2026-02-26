@@ -1,4 +1,5 @@
 import asyncio
+import os
 import shutil
 from pathlib import Path
 
@@ -7,6 +8,13 @@ class RepoManager:
     def __init__(self, repos_dir: Path, worktrees_dir: Path):
         self.repos_dir = repos_dir
         self.worktrees_dir = worktrees_dir
+
+    def _auth_url(self, url: str) -> str:
+        """Inject GitHub token into HTTPS URLs for authentication."""
+        token = os.environ.get("GITHUB_TOKEN", "")
+        if token and url.startswith("https://github.com/"):
+            return url.replace("https://github.com/", f"https://x-access-token:{token}@github.com/")
+        return url
 
     async def _run(self, *args: str, cwd: str | Path | None = None) -> str:
         proc = await asyncio.create_subprocess_exec(
@@ -22,11 +30,12 @@ class RepoManager:
 
     async def ensure_repo(self, name: str, url: str) -> Path:
         repo_path = self.repos_dir / name
+        auth_url = self._auth_url(url)
         if repo_path.exists():
             await self._run("git", "fetch", "--all", cwd=repo_path)
             await self._run("git", "pull", "--ff-only", cwd=repo_path)
         else:
-            await self._run("git", "clone", url, str(repo_path))
+            await self._run("git", "clone", auth_url, str(repo_path))
         return repo_path
 
     async def create_worktree(self, repo_name: str, branch_name: str) -> Path:

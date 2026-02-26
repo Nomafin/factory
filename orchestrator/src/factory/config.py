@@ -4,11 +4,20 @@ import yaml
 from pydantic import BaseModel
 
 
+class PlaneStatesConfig(BaseModel):
+    in_progress: str = ""
+    in_review: str = ""
+    done: str = ""
+    failed: str = ""
+    cancelled: str = ""
+
+
 class PlaneConfig(BaseModel):
     base_url: str = ""
     api_key: str = ""
     workspace_slug: str = "factory"
     project_id: str = ""
+    states: PlaneStatesConfig = PlaneStatesConfig()
 
 
 class OrchestratorConfig(BaseModel):
