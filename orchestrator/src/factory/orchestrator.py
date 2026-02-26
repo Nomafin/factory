@@ -9,7 +9,7 @@ from pathlib import Path
 from factory.config import Config
 from factory.db import Database
 from factory.memory import AgentMemory
-from factory.models import TaskStatus
+from factory.models import TaskCreate, TaskStatus, Workflow, WorkflowStatus
 from factory.notifier import TelegramNotifier
 from factory.plane import PlaneClient
 from factory.prompts import load_prompt
@@ -401,7 +401,12 @@ This summary will be used as the PR description, so write it for a human reviewe
             except Exception as e:
                 logger.warning("Failed to store success memory for task %d: %s", task_id, e)
 
-        # Push branch and create PR
+        # If this task is part of a workflow, advance to next step
+        if task.workflow_id is not None and task.workflow_step is not None:
+            await self._advance_workflow(task.workflow_id, task.workflow_step, output)
+            return
+
+        # Standalone task: push branch and create PR
         pr_url = ""
         wt_path = FACTORY_ROOT / "worktrees" / task.branch_name.replace("/", "-")
         try:
@@ -440,6 +445,15 @@ This summary will be used as the PR description, so write it for a human reviewe
                     )
                 except Exception as e:
                     logger.warning("Failed to store failure memory for task %d: %s", task_id, e)
+
+            # If this task is part of a workflow, fail the workflow
+            if task.workflow_id is not None and task.workflow_step is not None:
+                await self._fail_workflow(
+                    task.workflow_id, task.workflow_step,
+                    f"Step {task.workflow_step} failed: {output[:500]}",
+                )
+                return
+
             await self._update_plane_state(
                 task.plane_issue_id, self.config.plane.states.failed,
                 f"Agent failed: {output[:500]}"
@@ -591,6 +605,271 @@ This summary will be used as the PR description, so write it for a human reviewe
                 )
                 await self._notify(f"\U0001f6d1 Task cancelled: {task.title}")
         return cancelled
+
+    # ── Workflow orchestration ─────────────────────────────────────────────
+
+    async def start_workflow(self, workflow_name: str, title: str,
+                              description: str = "", repo: str = "",
+                              plane_issue_id: str = "") -> Workflow | None:
+        """Start a multi-step workflow by name."""
+        wf_config = self.config.workflows.get(workflow_name)
+        if not wf_config:
+            logger.error("Unknown workflow: %s", workflow_name)
+            return None
+
+        if not wf_config.steps:
+            logger.error("Workflow %s has no steps", workflow_name)
+            return None
+
+        # Create workflow record
+        workflow = await self.db.create_workflow(
+            name=workflow_name, title=title, description=description,
+            repo=repo, plane_issue_id=plane_issue_id,
+        )
+
+        # Create step records
+        for i, step_cfg in enumerate(wf_config.steps):
+            await self.db.create_workflow_step(
+                workflow_id=workflow.id,
+                step_index=i,
+                agent_type=step_cfg.agent,
+                input_key=step_cfg.input,
+                output_key=step_cfg.output,
+                condition=step_cfg.condition,
+            )
+
+        # Mark workflow as running
+        workflow = await self.db.update_workflow_status(workflow.id, WorkflowStatus.RUNNING)
+        await self._notify(f"\U0001f680 Workflow started: {workflow_name} - {title}")
+        logger.info("Started workflow %d (%s): %s", workflow.id, workflow_name, title)
+
+        # Start first step
+        await self._run_workflow_step(workflow.id, step_index=0)
+
+        return await self.db.get_workflow(workflow.id)
+
+    async def _run_workflow_step(self, workflow_id: int, step_index: int):
+        """Execute a specific step in a workflow."""
+        workflow = await self.db.get_workflow(workflow_id)
+        if not workflow:
+            return
+
+        steps = workflow.steps
+        if step_index >= len(steps):
+            # All steps completed
+            await self._complete_workflow(workflow_id)
+            return
+
+        step = steps[step_index]
+
+        # Evaluate condition (if any)
+        if step.condition:
+            should_run = await self._evaluate_condition(workflow_id, step.condition)
+            if not should_run:
+                logger.info(
+                    "Skipping workflow %d step %d (condition '%s' not met)",
+                    workflow_id, step_index, step.condition,
+                )
+                await self.db.update_workflow_step_status(step.id, "skipped")
+                await self.db.update_workflow_fields(workflow_id, current_step=step_index + 1)
+                # Move to the next step
+                await self._run_workflow_step(workflow_id, step_index + 1)
+                return
+
+        # Gather input from previous step output
+        step_input = ""
+        if step.input_key:
+            step_input = await self.db.get_step_output(workflow_id, step.input_key)
+
+        # Build task description with workflow context
+        step_description = workflow.description or ""
+        if step_input:
+            step_description += f"\n\n## Input from previous step ({step.input_key})\n{step_input}"
+
+        # Create a task for this step
+        task = await self.db.create_task(TaskCreate(
+            title=f"[{workflow.name}] Step {step_index}: {workflow.title}",
+            description=step_description,
+            repo=workflow.repo,
+            agent_type=step.agent_type,
+            plane_issue_id=workflow.plane_issue_id,
+        ))
+
+        # Link task to workflow
+        await self.db.update_task_fields(
+            task.id, workflow_id=workflow_id, workflow_step=step_index,
+        )
+        await self.db.update_workflow_step_status(step.id, "running", task_id=task.id)
+        await self.db.update_workflow_fields(workflow_id, current_step=step_index)
+
+        # Start the task
+        success = await self.process_task(task.id)
+        if not success:
+            await self._fail_workflow(
+                workflow_id, step_index,
+                f"Failed to start step {step_index} (agent: {step.agent_type})",
+            )
+
+    async def _advance_workflow(self, workflow_id: int, completed_step_index: int, output: str):
+        """Called when a workflow step's task completes successfully."""
+        workflow = await self.db.get_workflow(workflow_id)
+        if not workflow or workflow.status != WorkflowStatus.RUNNING:
+            return
+
+        # Find the step and mark it as completed with output
+        steps = workflow.steps
+        for step in steps:
+            if step.step_index == completed_step_index:
+                await self.db.update_workflow_step_status(
+                    step.id, "completed", output_data=output[:10000],
+                )
+                # Also mark the task as done
+                if step.task_id:
+                    await self.db.update_task_status(step.task_id, TaskStatus.DONE)
+                break
+
+        logger.info(
+            "Workflow %d step %d completed, advancing to step %d",
+            workflow_id, completed_step_index, completed_step_index + 1,
+        )
+
+        # Advance to next step
+        next_step = completed_step_index + 1
+        await self._run_workflow_step(workflow_id, next_step)
+
+    async def _complete_workflow(self, workflow_id: int):
+        """Mark a workflow as completed and handle final outputs."""
+        workflow = await self.db.update_workflow_status(workflow_id, WorkflowStatus.COMPLETED)
+        if not workflow:
+            return
+
+        logger.info("Workflow %d (%s) completed successfully", workflow_id, workflow.name)
+
+        # Find the last task with a branch to create a PR from
+        last_task_id = None
+        for step in reversed(workflow.steps):
+            if step.task_id and step.status == "completed":
+                last_task_id = step.task_id
+                break
+
+        if last_task_id:
+            task = await self.db.get_task(last_task_id)
+            if task and task.branch_name:
+                pr_url = ""
+                wt_path = FACTORY_ROOT / "worktrees" / task.branch_name.replace("/", "-")
+                try:
+                    summary = f"Workflow: {workflow.name}\n\n"
+                    for step in workflow.steps:
+                        status_icon = "\u2705" if step.status == "completed" else "\u23ed\ufe0f"
+                        summary += f"{status_icon} Step {step.step_index}: {step.agent_type} ({step.status})\n"
+                    pr_url = await self._push_and_create_pr(
+                        last_task_id, wt_path, task.branch_name,
+                        f"[Workflow] {workflow.title}", summary=summary,
+                    )
+                    await self.db.update_task_fields(last_task_id, pr_url=pr_url)
+                except Exception as e:
+                    logger.warning("Failed to create PR for workflow %d: %s", workflow_id, e)
+
+        await self._notify(
+            f"\u2705 Workflow completed: {workflow.name} - {workflow.title}"
+        )
+
+    async def _fail_workflow(self, workflow_id: int, failed_step_index: int, error: str):
+        """Mark a workflow as failed."""
+        workflow = await self.db.update_workflow_status(
+            workflow_id, WorkflowStatus.FAILED, error=error,
+        )
+        if not workflow:
+            return
+
+        # Mark the failed step
+        for step in workflow.steps:
+            if step.step_index == failed_step_index and step.status == "running":
+                await self.db.update_workflow_step_status(step.id, "failed")
+
+        logger.error(
+            "Workflow %d (%s) failed at step %d: %s",
+            workflow_id, workflow.name, failed_step_index, error,
+        )
+
+        await self._update_plane_state(
+            workflow.plane_issue_id, self.config.plane.states.failed,
+            f"Workflow failed at step {failed_step_index}: {error[:500]}",
+        )
+        await self._notify(
+            f"\u274c Workflow failed: {workflow.name} - {workflow.title}\n"
+            f"Step {failed_step_index}: {error[:200]}"
+        )
+
+    async def cancel_workflow(self, workflow_id: int) -> bool:
+        """Cancel a running workflow and its current task."""
+        workflow = await self.db.get_workflow(workflow_id)
+        if not workflow or workflow.status != WorkflowStatus.RUNNING:
+            return False
+
+        # Cancel the currently running task
+        for step in workflow.steps:
+            if step.status == "running" and step.task_id:
+                await self.cancel_task(step.task_id)
+                await self.db.update_workflow_step_status(step.id, "failed")
+
+        await self.db.update_workflow_status(workflow_id, WorkflowStatus.CANCELLED)
+        await self._notify(f"\U0001f6d1 Workflow cancelled: {workflow.name} - {workflow.title}")
+        return True
+
+    async def _evaluate_condition(self, workflow_id: int, condition: str) -> bool:
+        """Evaluate a simple condition for conditional branching.
+
+        Supported conditions:
+        - "has_issues": Check if previous step output mentions issues/problems
+        - "no_issues": Inverse of has_issues
+        - Any other string is treated as a key to check in previous step outputs
+        """
+        # Get all completed step outputs for this workflow
+        steps = await self.db.get_workflow_steps(workflow_id)
+        last_output = ""
+        for step in reversed(steps):
+            if step.status == "completed" and step.output_data:
+                last_output = step.output_data
+                break
+
+        if not last_output:
+            return True  # No previous output, run the step by default
+
+        lower_output = last_output.lower()
+
+        if condition == "has_issues":
+            issue_indicators = [
+                "issue", "bug", "error", "problem", "fix needed",
+                "needs revision", "change requested", "reject",
+                "improvement needed", "concern",
+            ]
+            return any(indicator in lower_output for indicator in issue_indicators)
+
+        if condition == "no_issues":
+            issue_indicators = [
+                "issue", "bug", "error", "problem", "fix needed",
+                "needs revision", "change requested", "reject",
+                "improvement needed", "concern",
+            ]
+            return not any(indicator in lower_output for indicator in issue_indicators)
+
+        # Check for a specific key in output (e.g., check if a named output exists)
+        output_data = await self.db.get_step_output(workflow_id, condition)
+        return bool(output_data)
+
+    async def recover_orphaned_workflows(self):
+        """Mark any running workflows as failed on startup."""
+        workflows = await self.db.list_workflows(status=WorkflowStatus.RUNNING)
+        for wf in workflows:
+            logger.warning("Recovering orphaned workflow %d: %s", wf.id, wf.title)
+            await self.db.update_workflow_status(
+                wf.id, WorkflowStatus.FAILED,
+                error="Workflow lost due to orchestrator restart",
+            )
+            await self._notify(f"\u274c Workflow failed (restart): {wf.name} - {wf.title}")
+        if workflows:
+            logger.info("Recovered %d orphaned workflows", len(workflows))
 
     async def close(self):
         # Stop polling loop

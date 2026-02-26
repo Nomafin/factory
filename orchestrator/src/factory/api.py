@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from factory.db import Database
 from factory.deps import get_db, get_orchestrator
-from factory.models import AgentInfo, Task, TaskCreate, TaskStatus
+from factory.models import AgentInfo, Task, TaskCreate, TaskStatus, Workflow, WorkflowCreate, WorkflowStatus
 from factory.orchestrator import Orchestrator
 from factory.plane import parse_webhook_event
 
@@ -107,6 +107,74 @@ async def resume_task(
     if not success:
         raise HTTPException(status_code=503, detail="No agent slots available or resume failed")
     return await db.get_task(task_id)
+
+
+# ── Workflow endpoints ────────────────────────────────────────────────────
+
+
+@router.post("/workflows", response_model=Workflow, status_code=201)
+async def create_workflow(
+    body: WorkflowCreate,
+    db: Database = Depends(get_db),
+    orch: Orchestrator = Depends(get_orchestrator),
+):
+    if not body.repo:
+        body.repo = orch.config.plane.default_repo
+
+    wf_config = orch.config.workflows.get(body.workflow_name)
+    if not wf_config:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown workflow: '{body.workflow_name}'. "
+                   f"Available: {list(orch.config.workflows.keys())}",
+        )
+
+    workflow = await orch.start_workflow(
+        workflow_name=body.workflow_name,
+        title=body.title,
+        description=body.description,
+        repo=body.repo,
+        plane_issue_id=body.plane_issue_id,
+    )
+    if not workflow:
+        raise HTTPException(status_code=503, detail="Failed to start workflow")
+    return workflow
+
+
+@router.get("/workflows", response_model=list[Workflow])
+async def list_workflows(
+    status: WorkflowStatus | None = None,
+    db: Database = Depends(get_db),
+):
+    return await db.list_workflows(status=status)
+
+
+@router.get("/workflows/{workflow_id}", response_model=Workflow)
+async def get_workflow(workflow_id: int, db: Database = Depends(get_db)):
+    workflow = await db.get_workflow(workflow_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return workflow
+
+
+@router.post("/workflows/{workflow_id}/cancel", response_model=Workflow)
+async def cancel_workflow(
+    workflow_id: int,
+    db: Database = Depends(get_db),
+    orch: Orchestrator = Depends(get_orchestrator),
+):
+    workflow = await db.get_workflow(workflow_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    if workflow.status != WorkflowStatus.RUNNING:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Workflow is {workflow.status.value}, must be running",
+        )
+    success = await orch.cancel_workflow(workflow_id)
+    if not success:
+        raise HTTPException(status_code=503, detail="Failed to cancel workflow")
+    return await db.get_workflow(workflow_id)
 
 
 @router.get("/agents", response_model=list[AgentInfo])

@@ -40,6 +40,7 @@ async def init_services(config_path: str, db_path: str):
     _memory = await _init_memory()
     _orchestrator = Orchestrator(db=_db, config=config, memory=_memory, base_dir=config_path.parent)
     await _orchestrator.recover_orphaned_tasks()
+    await _orchestrator.recover_orphaned_workflows()
     _orchestrator.start_polling()
 
 
