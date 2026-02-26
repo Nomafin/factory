@@ -12,6 +12,7 @@ class TelegramConfig(BaseModel):
 class PlaneStatesConfig(BaseModel):
     queued: str = ""
     in_progress: str = ""
+    waiting_for_input: str = ""
     in_review: str = ""
     done: str = ""
     failed: str = ""

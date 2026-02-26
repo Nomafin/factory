@@ -1,6 +1,9 @@
 import asyncio
+import json
 import logging
 import os
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from factory.config import Config
@@ -18,6 +21,7 @@ logger = logging.getLogger(__name__)
 FACTORY_ROOT = Path("/opt/factory")
 
 PROGRESS_INTERVAL = 5  # Post progress to Plane every N output messages
+POLL_INTERVAL = 30  # Seconds between polling for responses on waiting tasks
 
 
 class Orchestrator:
@@ -46,6 +50,7 @@ class Orchestrator:
             )
         self._output_counts: dict[int, int] = {}
         self._output_buffers: dict[int, list[str]] = {}
+        self._polling_task: asyncio.Task | None = None
 
     async def recover_orphaned_tasks(self):
         """Mark any in_progress tasks as failed on startup (no agent is running for them)."""
@@ -233,7 +238,11 @@ class Orchestrator:
             return False
 
     def _build_prompt(
-        self, title: str, description: str, memories: list[dict] | None = None
+        self,
+        title: str,
+        description: str,
+        memories: list[dict] | None = None,
+        clarification_history: list[dict] | None = None,
     ) -> str:
         parts = [f"Task: {title}"]
         if description:
@@ -248,7 +257,19 @@ class Orchestrator:
                 lines.append(f"- [{outcome}] Task \"{m_title}\": {summary}")
             parts.append("\n".join(lines))
 
+        if clarification_history:
+            lines = ["\n## Previous clarifications"]
+            for exchange in clarification_history:
+                lines.append(f"Q: {exchange.get('question', '')}")
+                lines.append(f"A: {exchange.get('response', '')}")
+            parts.append("\n".join(lines))
+            parts.append("\nPlease continue with the task using the information above.")
+
         parts.append("""
+If you need clarification from the user before proceeding, output ONLY this JSON (no other text):
+{"type": "clarification_needed", "question": "Your question here"}
+This will pause the task and post your question for the user to answer.
+
 When done, commit your changes with a descriptive message.
 
 After committing, end your response with a summary in exactly this format:
@@ -299,7 +320,71 @@ This summary will be used as the PR description, so write it for a human reviewe
         except RuntimeError:
             pass
 
+    @staticmethod
+    def _extract_clarification(output: str) -> str | None:
+        """Extract a clarification question from agent output, if present."""
+        try:
+            pattern = r'\{\s*"type"\s*:\s*"clarification_needed"\s*,\s*"question"\s*:\s*"([^"]*)"\s*\}'
+            match = re.search(pattern, output)
+            if match:
+                return match.group(1)
+        except Exception:
+            pass
+        return None
+
+    async def _handle_clarification(self, task_id: int, question: str):
+        """Handle an agent requesting clarification from the user."""
+        task = await self.db.get_task(task_id)
+        if not task:
+            return
+
+        asked_at = datetime.now(timezone.utc).isoformat()
+
+        # Build clarification context (preserve history for multi-round)
+        context: dict = {}
+        if task.clarification_context:
+            try:
+                context = json.loads(task.clarification_context)
+            except json.JSONDecodeError:
+                pass
+        history = context.get("history", [])
+        history.append({"question": question, "asked_at": asked_at})
+        context["history"] = history
+        context["pending_question"] = question
+        context["asked_at"] = asked_at
+
+        await self.db.update_task_fields(task_id, clarification_context=json.dumps(context))
+        await self.db.update_task_status(task_id, TaskStatus.WAITING_FOR_INPUT)
+
+        # Post question to Plane
+        comment_html = (
+            f"<p><b>\u2753 Agent needs clarification:</b></p>"
+            f"<p>{question}</p>"
+            f"<p><i>Reply to this issue to provide your answer.</i></p>"
+        )
+        await self._post_plane_comment(task.plane_issue_id, comment_html)
+
+        # Update Plane issue state if configured
+        if self.config.plane.states.waiting_for_input:
+            await self._update_plane_state(
+                task.plane_issue_id, self.config.plane.states.waiting_for_input,
+            )
+
+        await self._notify(
+            f"\u2753 Agent needs input: {task.title}\n"
+            f"Question: {question}\n"
+            f"Reply on Plane to continue."
+        )
+        logger.info("Task %d waiting for clarification: %s", task_id, question)
+
     async def _handle_success(self, task_id: int, output: str):
+        # Check if the agent is requesting clarification instead of completing
+        question = self._extract_clarification(output)
+        if question:
+            await self.db.add_log(task_id, f"Agent requesting clarification: {question}")
+            await self._handle_clarification(task_id, question)
+            return
+
         await self.db.add_log(task_id, f"Agent completed successfully:\n{output[:2000]}")
 
         task = await self.db.get_task(task_id)
@@ -361,6 +446,139 @@ This summary will be used as the PR description, so write it for a human reviewe
             )
             await self._notify(f"\u274c Agent failed: {task.title}\n{output[:200]}")
 
+    async def resume_task(self, task_id: int, user_response: str) -> bool:
+        """Resume a task that was waiting for user input."""
+        task = await self.db.get_task(task_id)
+        if not task or task.status != TaskStatus.WAITING_FOR_INPUT:
+            return False
+
+        if not self.runner.can_accept_task:
+            logger.warning("Cannot resume task %d: no available slots", task_id)
+            return False
+
+        # Update clarification context with the response
+        context: dict = {}
+        if task.clarification_context:
+            try:
+                context = json.loads(task.clarification_context)
+            except json.JSONDecodeError:
+                pass
+        history = context.get("history", [])
+        if history:
+            history[-1]["response"] = user_response
+        context.pop("pending_question", None)
+        context.pop("asked_at", None)
+        context["history"] = history
+
+        await self.db.update_task_fields(task_id, clarification_context=json.dumps(context))
+
+        # Rebuild prompt with clarification history
+        memories = []
+        if self.memory:
+            try:
+                memories = await self.memory.recall(
+                    repo=task.repo, query=f"{task.title} {task.description}"
+                )
+            except Exception as e:
+                logger.warning("Memory recall failed for task %d: %s", task_id, e)
+
+        prompt = self._build_prompt(
+            task.title, task.description,
+            memories=memories,
+            clarification_history=history,
+        )
+
+        template = self.config.agent_templates.get(task.agent_type)
+        if not template:
+            await self.db.update_task_status(task_id, TaskStatus.FAILED, error="Unknown agent type on resume")
+            return False
+
+        wt_path = FACTORY_ROOT / "worktrees" / task.branch_name.replace("/", "-")
+
+        await self.db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+        await self._update_plane_state(
+            task.plane_issue_id, self.config.plane.states.in_progress,
+            f"Agent resumed with user input"
+        )
+        await self._notify(f"\u25b6\ufe0f Agent resumed: {task.title}")
+
+        self._output_counts[task_id] = 0
+        self._output_buffers[task_id] = []
+
+        started = await self.runner.start_agent(
+            task_id=task_id,
+            prompt=prompt,
+            workdir=wt_path,
+            allowed_tools=template.allowed_tools,
+            on_output=self._on_agent_output,
+            on_complete=self._on_agent_complete,
+        )
+
+        if not started:
+            await self.db.update_task_status(task_id, TaskStatus.FAILED, error="Failed to restart agent")
+            return False
+
+        return True
+
+    async def poll_waiting_tasks(self):
+        """Check for user responses on tasks waiting for input."""
+        if not self.plane:
+            return
+
+        tasks = await self.db.list_tasks(status=TaskStatus.WAITING_FOR_INPUT)
+        project_id = self.config.plane.project_id
+
+        for task in tasks:
+            if not task.plane_issue_id or not task.clarification_context:
+                continue
+
+            try:
+                context = json.loads(task.clarification_context)
+            except json.JSONDecodeError:
+                continue
+
+            asked_at = context.get("asked_at")
+            if not asked_at:
+                continue
+
+            try:
+                comments = await self.plane.get_comments(project_id, task.plane_issue_id)
+            except Exception as e:
+                logger.warning("Failed to fetch comments for task %d: %s", task.id, e)
+                continue
+
+            # Find the first comment posted after we asked the question
+            response_text = None
+            for comment in comments:
+                created = comment.get("created_at", "")
+                if created > asked_at:
+                    html = comment.get("comment_html", "")
+                    # Strip HTML tags to get plain text
+                    response_text = re.sub(r"<[^>]+>", "", html).strip()
+                    if response_text:
+                        break
+
+            if response_text:
+                logger.info("Found response for task %d: %s", task.id, response_text[:100])
+                await self.db.add_log(task.id, f"User responded: {response_text[:1000]}")
+                await self.resume_task(task.id, response_text)
+
+    def start_polling(self):
+        """Start the background polling loop for waiting tasks."""
+        if self._polling_task is None or self._polling_task.done():
+            self._polling_task = asyncio.create_task(self._poll_loop())
+
+    async def _poll_loop(self):
+        """Background loop that periodically checks for responses on waiting tasks."""
+        while True:
+            try:
+                await asyncio.sleep(POLL_INTERVAL)
+                await self.poll_waiting_tasks()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.exception("Error in polling loop: %s", e)
+
     async def cancel_task(self, task_id: int) -> bool:
         cancelled = await self.runner.cancel_agent(task_id)
         if cancelled:
@@ -375,6 +593,13 @@ This summary will be used as the PR description, so write it for a human reviewe
         return cancelled
 
     async def close(self):
+        # Stop polling loop
+        if self._polling_task and not self._polling_task.done():
+            self._polling_task.cancel()
+            try:
+                await self._polling_task
+            except asyncio.CancelledError:
+                pass
         # Kill all running agents on shutdown
         for task_id in list(self.runner.get_running_agents()):
             await self.runner.cancel_agent(task_id)

@@ -113,5 +113,16 @@ class PlaneClient:
         resp = await self._client.post(url, json={"comment_html": comment_html})
         resp.raise_for_status()
 
+    async def get_comments(self, project_id: str, issue_id: str) -> list[dict]:
+        """Fetch all comments for an issue. Returns list of dicts with id, comment_html, created_at."""
+        url = f"{self.base_url}/api/v1/workspaces/{self.workspace_slug}/projects/{project_id}/work-items/{issue_id}/comments/"
+        resp = await self._client.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+        # Plane API may return results directly as a list or nested under "results"
+        if isinstance(data, list):
+            return data
+        return data.get("results", [])
+
     async def close(self):
         await self._client.aclose()

@@ -7,6 +7,7 @@ from pydantic import BaseModel
 class TaskStatus(str, Enum):
     QUEUED = "queued"
     IN_PROGRESS = "in_progress"
+    WAITING_FOR_INPUT = "waiting_for_input"
     IN_REVIEW = "in_review"
     DONE = "done"
     FAILED = "failed"
@@ -32,6 +33,7 @@ class Task(BaseModel):
     branch_name: str = ""
     pr_url: str = ""
     error: str = ""
+    clarification_context: str = ""
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None

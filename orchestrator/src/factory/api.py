@@ -2,9 +2,11 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import subprocess
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 
 from factory.db import Database
 from factory.deps import get_db, get_orchestrator
@@ -85,6 +87,28 @@ async def cancel_task(task_id: int, db: Database = Depends(get_db), orch: Orches
     return await db.get_task(task_id)
 
 
+class ResumeInput(BaseModel):
+    response: str
+
+
+@router.post("/tasks/{task_id}/resume", response_model=Task)
+async def resume_task(
+    task_id: int,
+    body: ResumeInput,
+    db: Database = Depends(get_db),
+    orch: Orchestrator = Depends(get_orchestrator),
+):
+    task = await db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status != TaskStatus.WAITING_FOR_INPUT:
+        raise HTTPException(status_code=400, detail=f"Task is {task.status}, must be waiting_for_input")
+    success = await orch.resume_task(task_id, body.response)
+    if not success:
+        raise HTTPException(status_code=503, detail="No agent slots available or resume failed")
+    return await db.get_task(task_id)
+
+
 @router.get("/agents", response_model=list[AgentInfo])
 async def list_agents(orch: Orchestrator = Depends(get_orchestrator)):
     agents = orch.runner.get_running_agents()
@@ -105,6 +129,12 @@ async def list_agents(orch: Orchestrator = Depends(get_orchestrator)):
 @router.post("/webhooks/plane")
 async def plane_webhook(request: Request, db: Database = Depends(get_db), orch: Orchestrator = Depends(get_orchestrator)):
     payload = await request.json()
+
+    # Handle comment events for tasks waiting for input
+    event_type = payload.get("event", "")
+    if event_type == "comment":
+        return await _handle_plane_comment_webhook(payload, db, orch)
+
     event = parse_webhook_event(payload)
 
     if event.event_type != "issue":
@@ -133,6 +163,32 @@ async def plane_webhook(request: Request, db: Database = Depends(get_db), orch: 
                 return {"status": "cancelled", "task_id": task.id}
 
     return {"status": "ok"}
+
+
+async def _handle_plane_comment_webhook(
+    payload: dict, db: Database, orch: Orchestrator
+) -> dict:
+    """Handle a Plane comment webhook to resume waiting tasks."""
+    data = payload.get("data", {})
+    issue_id = data.get("issue", "")
+    if not issue_id:
+        return {"status": "ignored", "reason": "no issue id"}
+
+    task = await db.find_by_plane_issue_id(issue_id)
+    if not task or task.status != TaskStatus.WAITING_FOR_INPUT:
+        return {"status": "ignored", "reason": "no waiting task for issue"}
+
+    comment_html = data.get("comment_html", "")
+    response_text = re.sub(r"<[^>]+>", "", comment_html).strip()
+    if not response_text:
+        return {"status": "ignored", "reason": "empty comment"}
+
+    logger.info("Plane comment webhook resuming task %d", task.id)
+    await db.add_log(task.id, f"User responded (via webhook): {response_text[:1000]}")
+    success = await orch.resume_task(task.id, response_text)
+    if success:
+        return {"status": "resumed", "task_id": task.id}
+    return {"status": "resume_failed", "task_id": task.id}
 
 
 def _verify_github_signature(payload: bytes, signature: str, secret: str) -> bool:
