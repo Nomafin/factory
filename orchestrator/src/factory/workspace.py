@@ -33,7 +33,8 @@ class RepoManager:
         auth_url = self._auth_url(url)
         if repo_path.exists():
             await self._run("git", "fetch", "--all", cwd=repo_path)
-            await self._run("git", "pull", "--ff-only", cwd=repo_path)
+            await self._run("git", "checkout", "main", cwd=repo_path)
+            await self._run("git", "reset", "--hard", "origin/main", cwd=repo_path)
         else:
             await self._run("git", "clone", auth_url, str(repo_path))
         return repo_path
