@@ -46,6 +46,7 @@ class AgentRunner:
         prompt: str,
         workdir: Path,
         allowed_tools: list[str],
+        system_prompt: str = "",
     ) -> list[str]:
         cmd = [
             self.claude_path,
@@ -53,6 +54,8 @@ class AgentRunner:
             "--output-format", "stream-json",
             "--verbose",
         ]
+        if system_prompt:
+            cmd.extend(["--system-prompt", system_prompt])
         if allowed_tools:
             cmd.extend(["--allowedTools", ",".join(allowed_tools)])
         return cmd
@@ -63,13 +66,14 @@ class AgentRunner:
         prompt: str,
         workdir: Path,
         allowed_tools: list[str],
+        system_prompt: str = "",
         on_output: Callable[[int, str], None] | None = None,
         on_complete: Callable[[int, int, str], None] | None = None,
     ) -> bool:
         if not self.can_accept_task:
             return False
 
-        cmd = self._build_command(prompt, workdir, allowed_tools)
+        cmd = self._build_command(prompt, workdir, allowed_tools, system_prompt)
         logger.info("Starting agent for task %d", task_id)
 
         process = await asyncio.create_subprocess_exec(
