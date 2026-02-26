@@ -2,6 +2,11 @@ import logging
 
 from surrealdb import AsyncSurreal
 
+try:
+    from openai import AsyncOpenAI
+except ImportError:
+    AsyncOpenAI = None
+
 logger = logging.getLogger(__name__)
 
 SCHEMA = """
@@ -38,11 +43,26 @@ LIMIT $limit;
 
 
 class AgentMemory:
-    def __init__(self, url: str, user: str, password: str):
+    def __init__(self, url: str, user: str, password: str, openai_api_key: str = ""):
         self._url = url
         self._user = user
         self._password = password
         self._db: AsyncSurreal | None = None
+        self._openai = None
+        if openai_api_key and AsyncOpenAI is not None:
+            self._openai = AsyncOpenAI(api_key=openai_api_key)
+
+    async def _embed(self, text: str) -> list[float] | None:
+        if not self._openai:
+            return None
+        try:
+            response = await self._openai.embeddings.create(
+                input=text, model="text-embedding-3-small"
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            logger.warning("Embedding generation failed: %s", e)
+            return None
 
     async def initialize(self):
         self._db = AsyncSurreal(self._url)
