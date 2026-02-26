@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     branch_name TEXT DEFAULT '',
     pr_url TEXT DEFAULT '',
     error TEXT DEFAULT '',
+    clarification_context TEXT DEFAULT '',
     created_at TEXT NOT NULL,
     started_at TEXT,
     completed_at TEXT
@@ -30,6 +31,10 @@ CREATE TABLE IF NOT EXISTS task_logs (
 );
 """
 
+MIGRATIONS = [
+    "ALTER TABLE tasks ADD COLUMN clarification_context TEXT DEFAULT '';",
+]
+
 
 def _row_to_task(row: aiosqlite.Row) -> Task:
     return Task(
@@ -43,6 +48,7 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
         branch_name=row["branch_name"],
         pr_url=row["pr_url"],
         error=row["error"],
+        clarification_context=row["clarification_context"] or "",
         created_at=datetime.fromisoformat(row["created_at"]),
         started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
         completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
@@ -59,6 +65,15 @@ class Database:
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(SCHEMA)
         await self._db.commit()
+        await self._apply_migrations()
+
+    async def _apply_migrations(self):
+        for sql in MIGRATIONS:
+            try:
+                await self._db.execute(sql)
+                await self._db.commit()
+            except Exception:
+                pass  # Column already exists
 
     async def close(self):
         if self._db:
