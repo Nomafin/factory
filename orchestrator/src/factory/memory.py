@@ -22,10 +22,9 @@ DEFINE INDEX IF NOT EXISTS idx_memory_search ON memory FIELDS summary FULLTEXT A
 """
 
 RECALL_QUERY = """\
-SELECT *, search::score(1) AS score
+SELECT *
 FROM memory
-WHERE repo = $repo AND summary @1@ $query
-ORDER BY score DESC
+WHERE repo = $repo AND summary @@ $query
 LIMIT $limit;
 """
 
@@ -87,19 +86,27 @@ class AgentMemory:
         if not self._db:
             return []
         try:
-            result = await self._db.query(
+            rows = await self._db.query(
                 RECALL_QUERY, {"repo": repo, "query": query, "limit": limit}
             )
-            if result and isinstance(result, list) and len(result) > 0:
-                rows = result[0].get("result", [])
-                if rows:
-                    return rows
+            if rows and isinstance(rows, list) and len(rows) > 0:
+                # SDK may return list of dicts or list of result wrappers
+                if isinstance(rows[0], dict) and "result" not in rows[0]:
+                    return rows[:limit]
+                if isinstance(rows[0], dict) and "result" in rows[0]:
+                    result = rows[0]["result"]
+                    if result:
+                        return result[:limit]
+
             # Fall back to recent memories if full-text search returns nothing
-            result = await self._db.query(
+            rows = await self._db.query(
                 RECALL_FALLBACK_QUERY, {"repo": repo, "limit": limit}
             )
-            if result and isinstance(result, list) and len(result) > 0:
-                return result[0].get("result", [])
+            if rows and isinstance(rows, list) and len(rows) > 0:
+                if isinstance(rows[0], dict) and "result" not in rows[0]:
+                    return rows[:limit]
+                if isinstance(rows[0], dict) and "result" in rows[0]:
+                    return (rows[0]["result"] or [])[:limit]
             return []
         except Exception as e:
             logger.warning("Failed to recall memories for repo %s: %s", repo, e)
