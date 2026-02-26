@@ -42,8 +42,11 @@ async def create_task(
 
     task = await db.create_task(body)
     if auto_run:
-        await orch.process_task(task.id)
-        task = await db.get_task(task.id)
+        try:
+            await orch.process_task(task.id)
+        except Exception:
+            logger.exception("Failed to auto-run task %d", task.id)
+        task = await db.get_task(task.id) or task
     return task
 
 
