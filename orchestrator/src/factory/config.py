@@ -44,6 +44,12 @@ class AgentTemplateConfig(BaseModel):
     timeout_minutes: int = 30
 
 
+class SurrealDBConfig(BaseModel):
+    url: str = ""
+    user: str = ""
+    password: str = ""
+
+
 class Config(BaseModel):
     max_concurrent_agents: int = 3
     agent_timeout_minutes: int = 30
@@ -52,6 +58,7 @@ class Config(BaseModel):
     repos: dict[str, RepoConfig] = {}
     telegram: TelegramConfig = TelegramConfig()
     agent_templates: dict[str, AgentTemplateConfig] = {}
+    surrealdb: SurrealDBConfig = SurrealDBConfig()
 
 
 def load_config(path: Path) -> Config:

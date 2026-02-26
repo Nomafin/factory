@@ -5,6 +5,7 @@ from pathlib import Path
 
 from factory.config import Config
 from factory.db import Database
+from factory.memory import AgentMemory
 from factory.models import TaskStatus
 from factory.notifier import TelegramNotifier
 from factory.plane import PlaneClient
@@ -19,9 +20,10 @@ PROGRESS_INTERVAL = 5  # Post progress to Plane every N output messages
 
 
 class Orchestrator:
-    def __init__(self, db: Database, config: Config):
+    def __init__(self, db: Database, config: Config, memory: AgentMemory | None = None):
         self.db = db
         self.config = config
+        self.memory = memory
         self.repo_manager = RepoManager(
             repos_dir=FACTORY_ROOT / "repos",
             worktrees_dir=FACTORY_ROOT / "worktrees",
@@ -170,7 +172,16 @@ class Orchestrator:
             await self._notify(f"\u274c Task failed: {task.title}\nWorkspace setup error")
             return False
 
-        prompt = self._build_prompt(task.title, task.description)
+        memories = []
+        if self.memory:
+            try:
+                memories = await self.memory.recall(
+                    repo=task.repo, query=f"{task.title} {task.description}"
+                )
+            except Exception as e:
+                logger.warning("Memory recall failed for task %d: %s", task_id, e)
+
+        prompt = self._build_prompt(task.title, task.description, memories=memories)
 
         await self.db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
         await self._update_plane_state(
@@ -202,10 +213,22 @@ class Orchestrator:
 
         return True
 
-    def _build_prompt(self, title: str, description: str) -> str:
+    def _build_prompt(
+        self, title: str, description: str, memories: list[dict] | None = None
+    ) -> str:
         parts = [f"Task: {title}"]
         if description:
             parts.append(f"\n{description}")
+
+        if memories:
+            lines = ["\n## Relevant past experience"]
+            for m in memories[:5]:
+                outcome = m.get("outcome", "?")
+                m_title = m.get("title", "")
+                summary = m.get("summary", "")[:150]
+                lines.append(f"- [{outcome}] Task \"{m_title}\": {summary}")
+            parts.append("\n".join(lines))
+
         parts.append("""
 When done, commit your changes with a descriptive message.
 
@@ -264,6 +287,16 @@ This summary will be used as the PR description, so write it for a human reviewe
         if not task:
             return
 
+        if self.memory:
+            try:
+                await self.memory.store(
+                    task_id=task_id, repo=task.repo, agent_type=task.agent_type,
+                    title=task.title, description=task.description,
+                    outcome="success", summary=output[:2000],
+                )
+            except Exception as e:
+                logger.warning("Failed to store success memory for task %d: %s", task_id, e)
+
         # Push branch and create PR
         pr_url = ""
         wt_path = FACTORY_ROOT / "worktrees" / task.branch_name.replace("/", "-")
@@ -293,6 +326,16 @@ This summary will be used as the PR description, so write it for a human reviewe
         await self.db.update_task_status(task_id, TaskStatus.FAILED, error=output[:2000])
         task = await self.db.get_task(task_id)
         if task:
+            if self.memory:
+                try:
+                    await self.memory.store(
+                        task_id=task_id, repo=task.repo, agent_type=task.agent_type,
+                        title=task.title, description=task.description,
+                        outcome="failed", summary=output[:2000],
+                        error=output[:500],
+                    )
+                except Exception as e:
+                    logger.warning("Failed to store failure memory for task %d: %s", task_id, e)
             await self._update_plane_state(
                 task.plane_issue_id, self.config.plane.states.failed,
                 f"Agent failed: {output[:500]}"
