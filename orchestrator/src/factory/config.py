@@ -51,6 +51,17 @@ class SurrealDBConfig(BaseModel):
     password: str = ""
 
 
+class WorkflowStepConfig(BaseModel):
+    agent: str
+    input: str = ""
+    output: str = ""
+    condition: str = ""
+
+
+class WorkflowConfig(BaseModel):
+    steps: list[WorkflowStepConfig]
+
+
 class Config(BaseModel):
     max_concurrent_agents: int = 3
     agent_timeout_minutes: int = 30
@@ -60,6 +71,7 @@ class Config(BaseModel):
     telegram: TelegramConfig = TelegramConfig()
     agent_templates: dict[str, AgentTemplateConfig] = {}
     surrealdb: SurrealDBConfig = SurrealDBConfig()
+    workflows: dict[str, WorkflowConfig] = {}
 
 
 def load_config(path: Path) -> Config:
