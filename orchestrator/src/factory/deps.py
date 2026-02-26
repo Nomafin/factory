@@ -32,11 +32,12 @@ async def _init_memory() -> AgentMemory | None:
 
 async def init_services(config_path: str, db_path: str):
     global _db, _orchestrator, _memory
-    config = load_config(Path(config_path))
+    config_path = Path(config_path)
+    config = load_config(config_path)
     _db = Database(db_path)
     await _db.initialize()
     _memory = await _init_memory()
-    _orchestrator = Orchestrator(db=_db, config=config, memory=_memory)
+    _orchestrator = Orchestrator(db=_db, config=config, memory=_memory, base_dir=config_path.parent)
     await _orchestrator.recover_orphaned_tasks()
 
 

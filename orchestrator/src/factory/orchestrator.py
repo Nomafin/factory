@@ -9,6 +9,7 @@ from factory.memory import AgentMemory
 from factory.models import TaskStatus
 from factory.notifier import TelegramNotifier
 from factory.plane import PlaneClient
+from factory.prompts import load_prompt
 from factory.runner import AgentRunner
 from factory.workspace import RepoManager
 
@@ -20,10 +21,11 @@ PROGRESS_INTERVAL = 5  # Post progress to Plane every N output messages
 
 
 class Orchestrator:
-    def __init__(self, db: Database, config: Config, memory: AgentMemory | None = None):
+    def __init__(self, db: Database, config: Config, memory: AgentMemory | None = None, base_dir: Path = FACTORY_ROOT):
         self.db = db
         self.config = config
         self.memory = memory
+        self.base_dir = base_dir
         self.repo_manager = RepoManager(
             repos_dir=FACTORY_ROOT / "repos",
             worktrees_dir=FACTORY_ROOT / "worktrees",
@@ -182,6 +184,7 @@ class Orchestrator:
                 logger.warning("Memory recall failed for task %d: %s", task_id, e)
 
         prompt = self._build_prompt(task.title, task.description, memories=memories)
+        system_prompt = load_prompt(template.system_prompt_file, self.base_dir)
 
         await self.db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
         await self._update_plane_state(
@@ -198,6 +201,7 @@ class Orchestrator:
             prompt=prompt,
             workdir=wt_path,
             allowed_tools=template.allowed_tools,
+            system_prompt=system_prompt,
             on_output=self._on_agent_output,
             on_complete=self._on_agent_complete,
         )
