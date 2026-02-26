@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from factory.db import Database
 from factory.deps import get_db, get_orchestrator
@@ -10,8 +10,19 @@ router = APIRouter(prefix="/api")
 
 
 @router.post("/tasks", response_model=Task, status_code=201)
-async def create_task(body: TaskCreate, db: Database = Depends(get_db)):
-    return await db.create_task(body)
+async def create_task(
+    body: TaskCreate,
+    auto_run: bool = Query(False),
+    db: Database = Depends(get_db),
+    orch: Orchestrator = Depends(get_orchestrator),
+):
+    if not body.repo:
+        body.repo = orch.config.plane.default_repo
+    task = await db.create_task(body)
+    if auto_run:
+        await orch.process_task(task.id)
+        task = await db.get_task(task.id)
+    return task
 
 
 @router.get("/tasks", response_model=list[Task])
@@ -78,10 +89,11 @@ async def plane_webhook(request: Request, db: Database = Depends(get_db), orch: 
         existing = await db.find_by_plane_issue_id(event.issue_id) if event.issue_id else None
         if existing and existing.status in (TaskStatus.QUEUED, TaskStatus.IN_PROGRESS):
             return {"status": "already_exists", "task_id": existing.id}
+        repo = event.repo or orch.config.plane.default_repo
         task = await db.create_task(TaskCreate(
             title=event.issue_title,
             description=event.description,
-            repo=event.repo,
+            repo=repo,
             agent_type=event.agent_type,
             plane_issue_id=event.issue_id,
         ))

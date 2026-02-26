@@ -4,6 +4,11 @@ import yaml
 from pydantic import BaseModel
 
 
+class TelegramConfig(BaseModel):
+    bot_token: str = ""
+    chat_id: str = ""
+
+
 class PlaneStatesConfig(BaseModel):
     in_progress: str = ""
     in_review: str = ""
@@ -43,6 +48,7 @@ class Config(BaseModel):
     plane: PlaneConfig = PlaneConfig()
     orchestrator: OrchestratorConfig = OrchestratorConfig()
     repos: dict[str, RepoConfig] = {}
+    telegram: TelegramConfig = TelegramConfig()
     agent_templates: dict[str, AgentTemplateConfig] = {}
 
 
