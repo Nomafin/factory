@@ -10,7 +10,9 @@ API_URL="http://localhost:8100/api"
 POLL_INTERVAL=15
 POLL_TIMEOUT=2100  # 35 minutes
 
-# stdout is redirected to deploy.log by the caller (api.py Popen)
+# Redirect all output to log file (owned by this process, survives parent death)
+exec >> "$LOGFILE" 2>&1
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
@@ -27,7 +29,7 @@ cd "$FACTORY_DIR"
 
 # Pull latest code
 BEFORE=$(git rev-parse HEAD)
-git pull --ff-only origin main 2>&1
+git pull --ff-only origin main
 AFTER=$(git rev-parse HEAD)
 
 if [ "$BEFORE" = "$AFTER" ]; then
@@ -37,14 +39,9 @@ fi
 
 log "Updated $BEFORE -> $AFTER"
 
-# Check if pyproject.toml changed
-if git diff --name-only "$BEFORE" "$AFTER" | grep -q "pyproject.toml"; then
-    log "pyproject.toml changed, running pip install..."
-    "$VENV/bin/pip" install -e "$ORCH_DIR" 2>&1
-else
-    log "pyproject.toml unchanged, reinstalling editable anyway..."
-    "$VENV/bin/pip" install -e "$ORCH_DIR" 2>&1
-fi
+# Always reinstall editable (cheap, ensures correct path)
+log "Reinstalling editable package..."
+"$VENV/bin/pip" install -e "$ORCH_DIR"
 
 # Wait for running agents to finish
 log "Checking for running agents..."
@@ -78,6 +75,6 @@ if systemctl is-active --quiet factory-orchestrator; then
     log "=== Deploy successful ==="
 else
     log "ERROR: factory-orchestrator failed to start!"
-    systemctl status factory-orchestrator 2>&1 || true
+    systemctl status factory-orchestrator || true
     exit 1
 fi

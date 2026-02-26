@@ -158,14 +158,9 @@ async def github_webhook(request: Request):
     if ref != "refs/heads/main":
         return {"status": "ignored", "reason": f"not main branch: {ref}"}
 
-    # Spawn deploy.sh detached so it survives orchestrator restart
+    # Spawn deploy.sh detached — it handles its own logging
     deploy_script = "/opt/factory/deploy.sh"
-    subprocess.Popen(
-        [deploy_script],
-        stdout=open("/opt/factory/deploy.log", "a"),
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    subprocess.Popen([deploy_script], start_new_session=True)
     logger.info("Deploy triggered by push to main (spawned deploy.sh)")
 
     return {"status": "deploy_started"}
