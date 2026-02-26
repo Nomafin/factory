@@ -14,10 +14,13 @@ async def init_services(config_path: str, db_path: str):
     _db = Database(db_path)
     await _db.initialize()
     _orchestrator = Orchestrator(db=_db, config=config)
+    await _orchestrator.recover_orphaned_tasks()
 
 
 async def shutdown_services():
-    global _db
+    global _db, _orchestrator
+    if _orchestrator:
+        await _orchestrator.close()
     if _db:
         await _db.close()
 

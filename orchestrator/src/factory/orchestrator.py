@@ -43,6 +43,23 @@ class Orchestrator:
         self._output_counts: dict[int, int] = {}
         self._output_buffers: dict[int, list[str]] = {}
 
+    async def recover_orphaned_tasks(self):
+        """Mark any in_progress tasks as failed on startup (no agent is running for them)."""
+        tasks = await self.db.list_tasks(status=TaskStatus.IN_PROGRESS)
+        for task in tasks:
+            logger.warning("Recovering orphaned task %d: %s", task.id, task.title)
+            await self.db.update_task_status(
+                task.id, TaskStatus.FAILED,
+                error="Agent lost due to orchestrator restart",
+            )
+            await self._update_plane_state(
+                task.plane_issue_id, self.config.plane.states.failed,
+                "Agent lost due to orchestrator restart",
+            )
+            await self._notify(f"\u274c Task failed (restart): {task.title}")
+        if tasks:
+            logger.info("Recovered %d orphaned tasks", len(tasks))
+
     async def _run(self, *args: str, cwd: str | Path | None = None) -> str:
         env = os.environ.copy()
         env["GH_TOKEN"] = os.environ.get("GITHUB_TOKEN", "")
