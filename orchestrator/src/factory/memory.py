@@ -43,6 +43,13 @@ ORDER BY created_at DESC
 LIMIT $limit;
 """
 
+VECTOR_RECALL_QUERY = """\
+SELECT *, vector::distance::knn() AS distance
+FROM memory
+WHERE repo = $repo AND embedding <|$limit,100|> $embedding
+ORDER BY distance;
+"""
+
 
 class AgentMemory:
     def __init__(self, url: str, user: str, password: str, openai_api_key: str = ""):
@@ -106,32 +113,45 @@ class AgentMemory:
         except Exception as e:
             logger.warning("Failed to store memory for task %d: %s", task_id, e)
 
+    def _parse_results(self, rows: list, limit: int) -> list[dict]:
+        if not rows or not isinstance(rows, list) or len(rows) == 0:
+            return []
+        if isinstance(rows[0], dict) and "result" not in rows[0]:
+            return rows[:limit]
+        if isinstance(rows[0], dict) and "result" in rows[0]:
+            result = rows[0]["result"]
+            if result:
+                return result[:limit]
+        return []
+
     async def recall(self, repo: str, query: str, limit: int = 5) -> list[dict]:
         if not self._db:
             return []
         try:
+            # Try vector search first
+            embedding = await self._embed(query)
+            if embedding:
+                rows = await self._db.query(
+                    VECTOR_RECALL_QUERY,
+                    {"repo": repo, "embedding": embedding, "limit": limit},
+                )
+                results = self._parse_results(rows, limit)
+                if results:
+                    return results
+
+            # Fall back to BM25 full-text search
             rows = await self._db.query(
                 RECALL_QUERY, {"repo": repo, "query": query, "limit": limit}
             )
-            if rows and isinstance(rows, list) and len(rows) > 0:
-                # SDK may return list of dicts or list of result wrappers
-                if isinstance(rows[0], dict) and "result" not in rows[0]:
-                    return rows[:limit]
-                if isinstance(rows[0], dict) and "result" in rows[0]:
-                    result = rows[0]["result"]
-                    if result:
-                        return result[:limit]
+            results = self._parse_results(rows, limit)
+            if results:
+                return results
 
-            # Fall back to recent memories if full-text search returns nothing
+            # Fall back to recent memories
             rows = await self._db.query(
                 RECALL_FALLBACK_QUERY, {"repo": repo, "limit": limit}
             )
-            if rows and isinstance(rows, list) and len(rows) > 0:
-                if isinstance(rows[0], dict) and "result" not in rows[0]:
-                    return rows[:limit]
-                if isinstance(rows[0], dict) and "result" in rows[0]:
-                    return (rows[0]["result"] or [])[:limit]
-            return []
+            return self._parse_results(rows, limit)
         except Exception as e:
             logger.warning("Failed to recall memories for repo %s: %s", repo, e)
             return []

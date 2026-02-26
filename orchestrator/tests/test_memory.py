@@ -74,3 +74,50 @@ async def test_store_works_without_embedding(memory):
     mock_db.create.assert_awaited_once()
     record = mock_db.create.call_args[0][1]
     assert record["embedding"] is None
+
+
+async def test_recall_uses_vector_search_when_available(memory):
+    mock_db = AsyncMock()
+    vector_results = [{"title": "Vector match", "outcome": "success", "summary": "found via vector"}]
+    mock_db.query.return_value = vector_results
+    memory._db = mock_db
+    memory._embed = AsyncMock(return_value=FAKE_EMBEDDING)
+
+    results = await memory.recall(repo="test/repo", query="login bug")
+
+    assert len(results) == 1
+    assert results[0]["title"] == "Vector match"
+    # First query should be the vector query
+    first_query = mock_db.query.call_args_list[0][0][0]
+    assert "<|" in first_query  # KNN operator
+
+
+async def test_recall_falls_back_to_fts_when_no_embedding(memory):
+    mock_db = AsyncMock()
+    fts_results = [{"title": "FTS match", "outcome": "success", "summary": "found via fts"}]
+    mock_db.query.return_value = fts_results
+    memory._db = mock_db
+    memory._openai = None  # No OpenAI → no embedding
+
+    results = await memory.recall(repo="test/repo", query="login bug")
+
+    assert len(results) == 1
+    assert results[0]["title"] == "FTS match"
+    first_query = mock_db.query.call_args_list[0][0][0]
+    assert "@@" in first_query  # BM25 operator
+
+
+async def test_recall_falls_back_to_fts_when_vector_empty(memory):
+    mock_db = AsyncMock()
+    # First call (vector) returns empty, second call (FTS) returns results
+    mock_db.query.side_effect = [
+        [],
+        [{"title": "FTS fallback", "outcome": "success"}],
+    ]
+    memory._db = mock_db
+    memory._embed = AsyncMock(return_value=FAKE_EMBEDDING)
+
+    results = await memory.recall(repo="test/repo", query="login bug")
+
+    assert len(results) == 1
+    assert results[0]["title"] == "FTS fallback"
