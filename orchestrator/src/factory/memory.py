@@ -24,6 +24,8 @@ DEFINE FIELD IF NOT EXISTS created_at ON memory TYPE datetime DEFAULT time::now(
 DEFINE INDEX IF NOT EXISTS idx_memory_repo ON memory FIELDS repo;
 DEFINE ANALYZER IF NOT EXISTS memory_analyzer TOKENIZERS blank, class FILTERS lowercase, snowball(english);
 DEFINE INDEX IF NOT EXISTS idx_memory_search ON memory FIELDS summary FULLTEXT ANALYZER memory_analyzer BM25;
+DEFINE FIELD IF NOT EXISTS embedding ON memory TYPE option<array<float>>;
+DEFINE INDEX IF NOT EXISTS idx_memory_vector ON memory FIELDS embedding HNSW DIMENSION 1536 DIST COSINE;
 """
 
 RECALL_QUERY = """\
@@ -88,6 +90,7 @@ class AgentMemory:
         if not self._db:
             return
         try:
+            embedding = await self._embed(summary[:2000])
             await self._db.create("memory", {
                 "task_id": task_id,
                 "repo": repo,
@@ -97,6 +100,7 @@ class AgentMemory:
                 "outcome": outcome,
                 "summary": summary[:2000],
                 "error": error[:500] if error else None,
+                "embedding": embedding,
             })
             logger.info("Stored memory for task %d (%s)", task_id, outcome)
         except Exception as e:

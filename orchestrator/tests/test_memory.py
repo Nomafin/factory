@@ -40,3 +40,37 @@ async def test_embed_text_returns_none_on_api_error(memory):
 
     result = await memory._embed("test text")
     assert result is None
+
+
+async def test_store_includes_embedding(memory):
+    mock_db = AsyncMock()
+    memory._db = mock_db
+    memory._embed = AsyncMock(return_value=FAKE_EMBEDDING)
+
+    await memory.store(
+        task_id=1, repo="test/repo", agent_type="coder",
+        title="Fix bug", description="Fix the login bug",
+        outcome="success", summary="Fixed the login timeout",
+    )
+
+    mock_db.create.assert_awaited_once()
+    call_args = mock_db.create.call_args
+    record = call_args[0][1]
+    assert record["embedding"] == FAKE_EMBEDDING
+    memory._embed.assert_awaited_once_with("Fixed the login timeout")
+
+
+async def test_store_works_without_embedding(memory):
+    mock_db = AsyncMock()
+    memory._db = mock_db
+    memory._embed = AsyncMock(return_value=None)
+
+    await memory.store(
+        task_id=1, repo="test/repo", agent_type="coder",
+        title="Fix bug", description="Fix it",
+        outcome="success", summary="Fixed it",
+    )
+
+    mock_db.create.assert_awaited_once()
+    record = mock_db.create.call_args[0][1]
+    assert record["embedding"] is None
