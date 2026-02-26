@@ -21,7 +21,8 @@ async def _init_memory() -> AgentMemory | None:
     if not (url and user and password):
         logger.info("SurrealDB env vars not set, agent memory disabled")
         return None
-    memory = AgentMemory(url=url, user=user, password=password)
+    openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+    memory = AgentMemory(url=url, user=user, password=password, openai_api_key=openai_api_key)
     try:
         await memory.initialize()
         return memory
