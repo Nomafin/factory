@@ -215,7 +215,17 @@ When SurrealDB is configured, agents build persistent memory across tasks:
 
 This lets agents learn from previous runs: what approaches worked, what failed, and repo-specific patterns.
 
-Currently uses **BM25 full-text search** on task summaries. The schema is designed for adding **vector search** (embeddings + HNSW index) later without migration.
+**Search strategy:**
+- With `OPENAI_API_KEY` set: vector similarity search (OpenAI `text-embedding-3-small`, 1536d) with BM25 fallback
+- Without `OPENAI_API_KEY`: BM25 full-text search only
+
+To enable vector search, add to `.env`:
+
+```
+OPENAI_API_KEY=sk-...
+```
+
+Old memories stored without embeddings are still findable via BM25 fallback.
 
 ## Plane Integration
 
