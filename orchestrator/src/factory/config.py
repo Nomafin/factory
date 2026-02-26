@@ -1,0 +1,43 @@
+from pathlib import Path
+
+import yaml
+from pydantic import BaseModel
+
+
+class PlaneConfig(BaseModel):
+    base_url: str = ""
+    api_key: str = ""
+    workspace_slug: str = "factory"
+    project_id: str = ""
+
+
+class OrchestratorConfig(BaseModel):
+    host: str = "0.0.0.0"
+    port: int = 8100
+    auth_token: str = ""
+
+
+class RepoConfig(BaseModel):
+    url: str
+    default_agent: str = "coder"
+
+
+class AgentTemplateConfig(BaseModel):
+    system_prompt_file: str = ""
+    allowed_tools: list[str] = []
+    timeout_minutes: int = 30
+
+
+class Config(BaseModel):
+    max_concurrent_agents: int = 3
+    agent_timeout_minutes: int = 30
+    plane: PlaneConfig = PlaneConfig()
+    orchestrator: OrchestratorConfig = OrchestratorConfig()
+    repos: dict[str, RepoConfig] = {}
+    agent_templates: dict[str, AgentTemplateConfig] = {}
+
+
+def load_config(path: Path) -> Config:
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+    return Config(**data)
