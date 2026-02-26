@@ -6,3 +6,4 @@ worktrees/
 repos/
 *.db
 .venv/
+config.yml
