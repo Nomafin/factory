@@ -75,7 +75,8 @@ class Orchestrator:
             raise RuntimeError(f"Command {args} failed: {stderr.decode()}")
         return stdout.decode().strip()
 
-    async def _push_and_create_pr(self, task_id: int, wt_path: Path, branch_name: str, title: str) -> str:
+    async def _push_and_create_pr(self, task_id: int, wt_path: Path, branch_name: str,
+                                   title: str, summary: str = "") -> str:
         """Push branch and create a GitHub PR. Returns the PR URL."""
         token = os.environ.get("GITHUB_TOKEN", "")
         remote_url = await self._run("git", "remote", "get-url", "origin", cwd=wt_path)
@@ -85,10 +86,14 @@ class Orchestrator:
 
         await self._run("git", "push", "-u", "origin", branch_name, cwd=wt_path)
 
+        body = f"Automated PR from Factory agent (task #{task_id})\n\n"
+        if summary:
+            body += f"## Summary\n\n{summary[:3000]}\n"
+
         pr_url = await self._run(
             "gh", "pr", "create",
             "--title", title,
-            "--body", f"Automated PR from Factory agent (task #{task_id})",
+            "--body", body,
             "--head", branch_name,
             cwd=wt_path,
         )
@@ -252,7 +257,7 @@ class Orchestrator:
         pr_url = ""
         wt_path = FACTORY_ROOT / "worktrees" / task.branch_name.replace("/", "-")
         try:
-            pr_url = await self._push_and_create_pr(task_id, wt_path, task.branch_name, task.title)
+            pr_url = await self._push_and_create_pr(task_id, wt_path, task.branch_name, task.title, summary=output)
             await self.db.update_task_fields(task_id, pr_url=pr_url)
             logger.info("Created PR for task %d: %s", task_id, pr_url)
         except Exception as e:
