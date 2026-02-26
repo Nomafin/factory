@@ -1,0 +1,47 @@
+max_concurrent_agents: 3
+agent_timeout_minutes: 30
+
+plane:
+  base_url: "https://plane.reitti.6a.fi"
+  api_key: ""
+  workspace_slug: "factory"
+  project_id: ""
+
+orchestrator:
+  host: "0.0.0.0"
+  port: 8100
+  auth_token: ""
+
+repos: {}
+
+agent_templates:
+  coder:
+    system_prompt_file: "prompts/coder.md"
+    allowed_tools:
+      - "Read"
+      - "Edit"
+      - "Bash"
+      - "Glob"
+      - "Grep"
+    timeout_minutes: 30
+  reviewer:
+    system_prompt_file: "prompts/reviewer.md"
+    allowed_tools:
+      - "Read"
+      - "Glob"
+      - "Grep"
+    timeout_minutes: 15
+  researcher:
+    system_prompt_file: "prompts/researcher.md"
+    allowed_tools:
+      - "WebSearch"
+      - "WebFetch"
+      - "Read"
+    timeout_minutes: 20
+  devops:
+    system_prompt_file: "prompts/devops.md"
+    allowed_tools:
+      - "Bash"
+      - "Read"
+      - "Edit"
+    timeout_minutes: 15
