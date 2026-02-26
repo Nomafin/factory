@@ -90,6 +90,19 @@ class PlaneClient:
             timeout=30.0,
         )
 
+    async def create_issue(self, project_id: str, title: str, description: str = "",
+                           state_id: str = "") -> str:
+        """Create a Plane issue. Returns the issue ID."""
+        url = f"{self.base_url}/api/v1/workspaces/{self.workspace_slug}/projects/{project_id}/work-items/"
+        body: dict = {"name": title}
+        if description:
+            body["description_html"] = f"<p>{description}</p>"
+        if state_id:
+            body["state"] = state_id
+        resp = await self._client.post(url, json=body)
+        resp.raise_for_status()
+        return resp.json()["id"]
+
     async def update_issue_state(self, project_id: str, issue_id: str, state_id: str):
         url = f"{self.base_url}/api/v1/workspaces/{self.workspace_slug}/projects/{project_id}/work-items/{issue_id}/"
         resp = await self._client.patch(url, json={"state": state_id})

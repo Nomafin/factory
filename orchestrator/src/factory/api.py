@@ -18,6 +18,21 @@ async def create_task(
 ):
     if not body.repo:
         body.repo = orch.config.plane.default_repo
+
+    # Create a corresponding Plane issue if no plane_issue_id provided
+    if not body.plane_issue_id and orch.plane:
+        try:
+            issue_id = await orch.plane.create_issue(
+                project_id=orch.config.plane.project_id,
+                title=body.title,
+                description=body.description or "",
+                state_id=orch.config.plane.states.queued,
+            )
+            body.plane_issue_id = issue_id
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("Failed to create Plane issue: %s", e)
+
     task = await db.create_task(body)
     if auto_run:
         await orch.process_task(task.id)

@@ -23,6 +23,9 @@ def mock_orchestrator(db):
     orch.process_task = AsyncMock(return_value=True)
     orch.runner = MagicMock()
     orch.runner.get_running_agents.return_value = {}
+    orch.plane = None
+    orch.config = MagicMock()
+    orch.config.plane.default_repo = "factory"
     return orch
 
 
@@ -47,6 +50,14 @@ async def test_create_task(client):
     assert data["title"] == "Fix login bug"
     assert data["status"] == "queued"
     assert data["id"] is not None
+
+
+async def test_create_task_default_repo(client):
+    resp = await client.post("/api/tasks", json={
+        "title": "Fix something",
+    })
+    assert resp.status_code == 201
+    assert resp.json()["repo"] == "factory"
 
 
 async def test_list_tasks(client):

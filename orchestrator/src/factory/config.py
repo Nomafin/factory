@@ -10,6 +10,7 @@ class TelegramConfig(BaseModel):
 
 
 class PlaneStatesConfig(BaseModel):
+    queued: str = ""
     in_progress: str = ""
     in_review: str = ""
     done: str = ""
@@ -22,6 +23,7 @@ class PlaneConfig(BaseModel):
     api_key: str = ""
     workspace_slug: str = "factory"
     project_id: str = ""
+    default_repo: str = ""
     states: PlaneStatesConfig = PlaneStatesConfig()
 
 
