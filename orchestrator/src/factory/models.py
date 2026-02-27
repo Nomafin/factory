@@ -246,3 +246,36 @@ class HandoffCreate(BaseModel):
     output_type: str = "general"
     content: str = ""
     summary: str = ""
+
+
+# ── Message board models ─────────────────────────────────────────────────
+
+
+class MessageType(str, Enum):
+    INFO = "info"
+    QUESTION = "question"
+    HANDOFF = "handoff"
+    STATUS = "status"
+    ERROR = "error"
+
+
+class MessageCreate(BaseModel):
+    sender: str
+    recipient: str | None = None  # null = broadcast
+    task_id: int | None = None
+    workflow_id: int | None = None
+    message: str
+    message_type: MessageType = MessageType.INFO
+    reply_to: int | None = None  # threading support
+
+
+class Message(BaseModel):
+    id: int
+    sender: str
+    recipient: str | None = None
+    task_id: int | None = None
+    workflow_id: int | None = None
+    message: str
+    message_type: MessageType = MessageType.INFO
+    reply_to: int | None = None
+    created_at: datetime

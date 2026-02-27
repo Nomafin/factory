@@ -4,6 +4,7 @@ import aiosqlite
 
 from factory.models import (
     AgentHandoff, HandoffCreate,
+    Message, MessageCreate, MessageType,
     Task, TaskCreate, TaskStatus,
     Workflow, WorkflowCreate, WorkflowStatus, WorkflowStep, WorkflowStepDef,
 )
@@ -83,6 +84,21 @@ CREATE TABLE IF NOT EXISTS agent_handoffs (
     FOREIGN KEY (from_task_id) REFERENCES tasks(id),
     FOREIGN KEY (to_task_id) REFERENCES tasks(id),
     FOREIGN KEY (workflow_id) REFERENCES workflows(id)
+);
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender TEXT NOT NULL,
+    recipient TEXT,
+    task_id INTEGER,
+    workflow_id INTEGER,
+    message TEXT NOT NULL,
+    message_type TEXT NOT NULL DEFAULT 'info',
+    reply_to INTEGER,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES tasks(id),
+    FOREIGN KEY (workflow_id) REFERENCES workflows(id),
+    FOREIGN KEY (reply_to) REFERENCES agent_messages(id)
 );
 """
 
@@ -471,3 +487,108 @@ class Database:
         )
         await self._db.commit()
         return await self.get_handoff(handoff_id)
+
+    # ── Message board operations ───────────────────────────────────────────
+
+    async def create_message(self, msg: MessageCreate) -> Message:
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self._db.execute(
+            """INSERT INTO agent_messages
+               (sender, recipient, task_id, workflow_id, message, message_type, reply_to, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                msg.sender,
+                msg.recipient,
+                msg.task_id,
+                msg.workflow_id,
+                msg.message,
+                msg.message_type.value,
+                msg.reply_to,
+                now,
+            ),
+        )
+        await self._db.commit()
+        return await self.get_message(cursor.lastrowid)
+
+    async def get_message(self, message_id: int) -> Message | None:
+        cursor = await self._db.execute(
+            "SELECT * FROM agent_messages WHERE id = ?", (message_id,)
+        )
+        row = await cursor.fetchone()
+        return _row_to_message(row) if row else None
+
+    async def list_messages(
+        self,
+        task_id: int | None = None,
+        workflow_id: int | None = None,
+        sender: str | None = None,
+        message_type: str | None = None,
+        since: str | None = None,
+        before: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Message]:
+        conditions = []
+        params: list = []
+
+        if task_id is not None:
+            conditions.append("task_id = ?")
+            params.append(task_id)
+        if workflow_id is not None:
+            conditions.append("workflow_id = ?")
+            params.append(workflow_id)
+        if sender:
+            conditions.append("sender = ?")
+            params.append(sender)
+        if message_type:
+            conditions.append("message_type = ?")
+            params.append(message_type)
+        if since:
+            conditions.append("created_at >= ?")
+            params.append(since)
+        if before:
+            conditions.append("created_at <= ?")
+            params.append(before)
+
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        query = f"SELECT * FROM agent_messages{where} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        cursor = await self._db.execute(query, params)
+        rows = await cursor.fetchall()
+        return [_row_to_message(row) for row in rows]
+
+    async def search_messages(self, query: str, limit: int = 50) -> list[Message]:
+        cursor = await self._db.execute(
+            """SELECT * FROM agent_messages
+               WHERE message LIKE ?
+               ORDER BY created_at DESC LIMIT ?""",
+            (f"%{query}%", limit),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_message(row) for row in rows]
+
+    async def get_thread(self, parent_id: int) -> list[Message]:
+        """Get a message and all its replies."""
+        cursor = await self._db.execute(
+            """SELECT * FROM agent_messages
+               WHERE id = ? OR reply_to = ?
+               ORDER BY created_at ASC""",
+            (parent_id, parent_id),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_message(row) for row in rows]
+
+
+def _row_to_message(row: aiosqlite.Row) -> Message:
+    return Message(
+        id=row["id"],
+        sender=row["sender"],
+        recipient=row["recipient"],
+        task_id=row["task_id"],
+        workflow_id=row["workflow_id"],
+        message=row["message"],
+        message_type=MessageType(row["message_type"]),
+        reply_to=row["reply_to"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )

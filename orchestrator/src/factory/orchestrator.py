@@ -10,8 +10,8 @@ from factory.config import Config
 from factory.db import Database
 from factory.memory import AgentMemory
 from factory.models import (
-    HANDOFF_OUTPUT_TYPES, HandoffCreate, ReviewIssue, ReviewResult,
-    TaskCreate, TaskStatus, Workflow, WorkflowStatus,
+    HANDOFF_OUTPUT_TYPES, HandoffCreate, MessageCreate, MessageType,
+    ReviewIssue, ReviewResult, TaskCreate, TaskStatus, Workflow, WorkflowStatus,
 )
 from factory.notifier import TelegramNotifier
 from factory.plane import PlaneClient
@@ -125,6 +125,98 @@ class Orchestrator:
             except Exception as e:
                 logger.warning("Telegram notification failed: %s", e)
 
+    async def post_message(
+        self,
+        sender: str,
+        message: str,
+        message_type: MessageType = MessageType.INFO,
+        recipient: str | None = None,
+        task_id: int | None = None,
+        workflow_id: int | None = None,
+        reply_to: int | None = None,
+    ):
+        """Post a message to the agent message board."""
+        if not self.config.message_board.enabled:
+            return None
+        try:
+            msg = await self.db.create_message(MessageCreate(
+                sender=sender,
+                recipient=recipient,
+                task_id=task_id,
+                workflow_id=workflow_id,
+                message=message,
+                message_type=message_type,
+                reply_to=reply_to,
+            ))
+            # Broadcast to SSE subscribers
+            from factory.api import _message_subscribers
+            msg_data = msg.model_dump(mode="json")
+            msg_data["created_at"] = msg.created_at.isoformat()
+            for queue in _message_subscribers:
+                try:
+                    queue.put_nowait(msg_data)
+                except asyncio.QueueFull:
+                    pass
+
+            await self.forward_message_to_telegram(msg)
+            return msg
+        except Exception as e:
+            logger.warning("Failed to post message: %s", e)
+            return None
+
+    async def forward_message_to_telegram(self, msg):
+        """Forward a message board message to Telegram if configured."""
+        if not self.notifier:
+            return
+        mb_config = self.config.message_board
+        if not mb_config.telegram_forward:
+            return
+        if mb_config.forward_types and msg.message_type.value not in mb_config.forward_types:
+            return
+
+        type_icons = {
+            "info": "\u2139\ufe0f",
+            "question": "\u2753",
+            "handoff": "\U0001f91d",
+            "status": "\U0001f4cb",
+            "error": "\U0001f6a8",
+        }
+        icon = type_icons.get(msg.message_type.value, "\U0001f4ac")
+        text = f"{icon} <b>[{msg.message_type.value.upper()}]</b> from <b>{msg.sender}</b>"
+        if msg.recipient:
+            text += f" \u2192 <b>{msg.recipient}</b>"
+        if msg.task_id:
+            text += f" (task #{msg.task_id})"
+        text += f"\n{msg.message[:500]}"
+
+        try:
+            # Use separate chat_id for message board if configured
+            chat_id = mb_config.telegram_chat_id or self.notifier.chat_id
+            original_chat_id = self.notifier.chat_id
+            self.notifier.chat_id = chat_id
+            await self.notifier.send(text)
+            self.notifier.chat_id = original_chat_id
+        except Exception as e:
+            logger.warning("Failed to forward message to Telegram: %s", e)
+
+    def _parse_agent_messages(self, task_id: int, content: str):
+        """Check if agent output contains a message board post."""
+        try:
+            data = json.loads(content)
+            if isinstance(data, dict) and data.get("type") == "message":
+                loop = asyncio.get_running_loop()
+                loop.create_task(self.post_message(
+                    sender=f"task-{task_id}",
+                    message=data.get("content", ""),
+                    recipient=data.get("to"),
+                    task_id=task_id,
+                    message_type=MessageType(data.get("message_type", "info")),
+                ))
+                return True
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return False
+
     async def _update_plane_state(self, plane_issue_id: str, state_id: str, comment: str = ""):
         if not self.plane or not plane_issue_id or not state_id:
             return
@@ -220,6 +312,15 @@ class Orchestrator:
                 f"Agent started on branch <code>{branch_name}</code>"
             )
             await self._notify(f"\U0001f527 Agent started: {task.title}\nBranch: {branch_name}")
+
+            # Auto-post status message on task start
+            await self.post_message(
+                sender=f"orchestrator",
+                message=f"Task started: {task.title} (agent: {task.agent_type}, branch: {branch_name})",
+                message_type=MessageType.STATUS,
+                task_id=task_id,
+                workflow_id=task.workflow_id,
+            )
 
             self._output_counts[task_id] = 0
             self._output_buffers[task_id] = []
@@ -445,6 +546,9 @@ This summary will be used as the PR description, so write it for a human reviewe
             loop = asyncio.get_running_loop()
             loop.create_task(self.db.add_log(task_id, content[:1000]))
 
+            # Check for agent message board posts
+            self._parse_agent_messages(task_id, content)
+
             # Buffer output and post to Plane periodically
             self._output_counts[task_id] = self._output_counts.get(task_id, 0) + 1
             buf = self._output_buffers.setdefault(task_id, [])
@@ -596,6 +700,18 @@ This summary will be used as the PR description, so write it for a human reviewe
             notify_msg += f"\nPR: {pr_url}"
         await self._notify(notify_msg)
 
+        # Auto-post status message on task completion
+        completion_msg = f"Task completed: {task.title}"
+        if pr_url:
+            completion_msg += f" (PR: {pr_url})"
+        await self.post_message(
+            sender="orchestrator",
+            message=completion_msg,
+            message_type=MessageType.STATUS,
+            task_id=task_id,
+            workflow_id=task.workflow_id,
+        )
+
     async def _handle_failure(self, task_id: int, output: str):
         await self.db.update_task_status(task_id, TaskStatus.FAILED, error=output[:2000])
         task = await self.db.get_task(task_id)
@@ -624,6 +740,15 @@ This summary will be used as the PR description, so write it for a human reviewe
                 f"Agent failed: {output[:500]}"
             )
             await self._notify(f"\u274c Agent failed: {task.title}\n{output[:200]}")
+
+            # Auto-post error message on task failure
+            await self.post_message(
+                sender="orchestrator",
+                message=f"Task failed: {task.title}\n{output[:500]}",
+                message_type=MessageType.ERROR,
+                task_id=task_id,
+                workflow_id=task.workflow_id,
+            )
 
     async def resume_task(self, task_id: int, user_response: str) -> bool:
         """Resume a task that was waiting for user input."""

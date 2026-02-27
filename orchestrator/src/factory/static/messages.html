@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Factory - Agent Message Board</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2d3140;
+    --text: #e0e0e6;
+    --text-dim: #8b8fa3;
+    --accent: #6c8cff;
+    --info: #6c8cff;
+    --question: #f0b429;
+    --handoff: #a78bfa;
+    --status: #34d399;
+    --error: #f87171;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg); color: var(--text); min-height: 100vh;
+  }
+  .header {
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 12px 20px; display: flex; align-items: center;
+    justify-content: space-between; position: sticky; top: 0; z-index: 100;
+  }
+  .header h1 { font-size: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .header h1 span { font-size: 20px; }
+  .connection-status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); }
+  .connection-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--error); transition: background 0.3s; }
+  .connection-dot.connected { background: var(--status); }
+  .toolbar {
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 10px 20px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+  }
+  .filter-group { display: flex; align-items: center; gap: 6px; }
+  .filter-group label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  select, input[type="text"], input[type="number"] {
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    padding: 6px 10px; border-radius: 6px; font-size: 13px; outline: none;
+  }
+  select:focus, input:focus { border-color: var(--accent); }
+  input[type="number"] { width: 80px; }
+  input[type="text"] { width: 180px; }
+  .btn {
+    background: var(--accent); color: #fff; border: none; padding: 6px 14px;
+    border-radius: 6px; font-size: 13px; cursor: pointer; font-weight: 500; transition: opacity 0.2s;
+  }
+  .btn:hover { opacity: 0.85; }
+  .btn-secondary { background: var(--surface2); border: 1px solid var(--border); color: var(--text); }
+  .messages-container {
+    max-width: 900px; margin: 0 auto; padding: 16px 20px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .message-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; transition: border-color 0.2s; animation: fadeIn 0.3s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+  .message-card:hover { border-color: var(--accent); }
+  .message-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .msg-type-badge {
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+    padding: 2px 8px; border-radius: 4px; display: inline-flex; align-items: center; gap: 4px;
+  }
+  .msg-type-info    { background: rgba(108,140,255,0.15); color: var(--info); }
+  .msg-type-question{ background: rgba(240,180,41,0.15); color: var(--question); }
+  .msg-type-handoff { background: rgba(167,139,250,0.15); color: var(--handoff); }
+  .msg-type-status  { background: rgba(52,211,153,0.15); color: var(--status); }
+  .msg-type-error   { background: rgba(248,113,113,0.15); color: var(--error); }
+  .msg-sender { font-weight: 600; font-size: 14px; }
+  .msg-arrow { color: var(--text-dim); font-size: 12px; }
+  .msg-recipient { font-weight: 500; font-size: 14px; color: var(--accent); }
+  .msg-meta { font-size: 12px; color: var(--text-dim); margin-left: auto; display: flex; gap: 10px; align-items: center; }
+  .msg-body { font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+  .msg-tag { font-size: 11px; color: var(--text-dim); background: var(--surface2); padding: 2px 8px; border-radius: 4px; }
+  .msg-reply-indicator { font-size: 12px; color: var(--text-dim); margin-bottom: 6px; display: flex; align-items: center; gap: 4px; }
+  .compose-area { background: var(--surface); border-top: 1px solid var(--border); padding: 14px 20px; position: sticky; bottom: 0; }
+  .compose-form { max-width: 900px; margin: 0 auto; display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .compose-form .input-group { display: flex; flex-direction: column; gap: 4px; }
+  .compose-form .input-group label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; }
+  .compose-form textarea {
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    padding: 8px 12px; border-radius: 6px; font-size: 13px; font-family: inherit;
+    outline: none; resize: vertical; min-height: 40px; flex: 1; min-width: 250px;
+  }
+  .compose-form textarea:focus { border-color: var(--accent); }
+  .empty-state { text-align: center; padding: 60px 20px; color: var(--text-dim); }
+  .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
+  .empty-state h3 { font-size: 16px; margin-bottom: 6px; color: var(--text); }
+  .empty-state p { font-size: 13px; }
+  .loading { text-align: center; padding: 40px; color: var(--text-dim); }
+  @media (max-width: 640px) {
+    .toolbar { padding: 8px 12px; }
+    .messages-container { padding: 10px 12px; }
+    .compose-form { flex-direction: column; }
+    .compose-form textarea { min-width: 100%; }
+    .msg-meta { margin-left: 0; margin-top: 4px; }
+    .header { padding: 10px 14px; }
+  }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1><span>&#x1f4ac;</span> Agent Message Board</h1>
+  <div class="connection-status">
+    <div class="connection-dot" id="connDot"></div>
+    <span id="connText">Connecting...</span>
+  </div>
+</div>
+<div class="toolbar">
+  <div class="filter-group">
+    <label>Type</label>
+    <select id="filterType">
+      <option value="">All</option>
+      <option value="info">Info</option>
+      <option value="question">Question</option>
+      <option value="handoff">Handoff</option>
+      <option value="status">Status</option>
+      <option value="error">Error</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <label>Task</label>
+    <input type="number" id="filterTask" placeholder="Task ID">
+  </div>
+  <div class="filter-group">
+    <label>Workflow</label>
+    <input type="number" id="filterWorkflow" placeholder="WF ID">
+  </div>
+  <div class="filter-group">
+    <label>Sender</label>
+    <input type="text" id="filterSender" placeholder="e.g. orchestrator">
+  </div>
+  <div class="filter-group">
+    <label>Search</label>
+    <input type="text" id="filterSearch" placeholder="Search messages...">
+  </div>
+  <button class="btn" onclick="applyFilters()">Filter</button>
+  <button class="btn btn-secondary" onclick="clearFilters()">Clear</button>
+</div>
+<div class="messages-container" id="messageList">
+  <div class="loading">Loading messages...</div>
+</div>
+<div class="compose-area">
+  <form class="compose-form" onsubmit="sendMessage(event)">
+    <div class="input-group">
+      <label>Sender</label>
+      <input type="text" id="composeSender" placeholder="your-name" required style="width:120px">
+    </div>
+    <div class="input-group">
+      <label>To (optional)</label>
+      <input type="text" id="composeRecipient" placeholder="broadcast" style="width:120px">
+    </div>
+    <div class="input-group">
+      <label>Type</label>
+      <select id="composeType" style="width:100px">
+        <option value="info">Info</option>
+        <option value="question">Question</option>
+        <option value="handoff">Handoff</option>
+        <option value="status">Status</option>
+        <option value="error">Error</option>
+      </select>
+    </div>
+    <div class="input-group" style="flex:1">
+      <label>Message</label>
+      <textarea id="composeMessage" placeholder="Type a message..." rows="1" required></textarea>
+    </div>
+    <button type="submit" class="btn">Send</button>
+  </form>
+</div>
+<script>
+var API = '/api';
+var eventSource = null;
+var allMessages = [];
+var typeIcons = { info:'&#x2139;&#xfe0f;', question:'&#x2753;', handoff:'&#x1f91d;', status:'&#x1f4cb;', error:'&#x1f6a8;' };
+
+function formatTime(iso) {
+  var d = new Date(iso); var now = new Date(); var diff = now - d;
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return Math.floor(diff/60000) + 'm ago';
+  if (diff < 86400000) return Math.floor(diff/3600000) + 'h ago';
+  return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+
+function escHtml(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
+
+function renderMessage(msg) {
+  var tc = 'msg-type-' + msg.message_type;
+  var icon = typeIcons[msg.message_type] || '&#x1f4ac;';
+  var h = '<div class="message-card" data-id="' + msg.id + '">';
+  if (msg.reply_to) h += '<div class="msg-reply-indicator">&#x21a9;&#xfe0f; Reply to #' + msg.reply_to + '</div>';
+  h += '<div class="message-header">';
+  h += '<span class="msg-type-badge ' + tc + '">' + icon + ' ' + escHtml(msg.message_type) + '</span>';
+  h += '<span class="msg-sender">' + escHtml(msg.sender) + '</span>';
+  if (msg.recipient) h += '<span class="msg-arrow">&#x2192;</span><span class="msg-recipient">' + escHtml(msg.recipient) + '</span>';
+  h += '<div class="msg-meta">';
+  if (msg.task_id) h += '<span class="msg-tag">Task #' + msg.task_id + '</span>';
+  if (msg.workflow_id) h += '<span class="msg-tag">WF #' + msg.workflow_id + '</span>';
+  h += '<span>#' + msg.id + '</span><span>' + formatTime(msg.created_at) + '</span>';
+  h += '</div></div>';
+  h += '<div class="msg-body">' + escHtml(msg.message) + '</div></div>';
+  return h;
+}
+
+function renderMessages() {
+  var c = document.getElementById('messageList');
+  if (allMessages.length === 0) {
+    c.innerHTML = '<div class="empty-state"><div class="icon">&#x1f4ac;</div><h3>No messages yet</h3><p>Messages from agents will appear here in real-time.</p></div>';
+    return;
+  }
+  c.innerHTML = allMessages.map(renderMessage).join('');
+}
+
+async function loadMessages() {
+  var p = new URLSearchParams();
+  var v;
+  v = document.getElementById('filterType').value; if (v) p.set('message_type', v);
+  v = document.getElementById('filterTask').value; if (v) p.set('task_id', v);
+  v = document.getElementById('filterWorkflow').value; if (v) p.set('workflow_id', v);
+  v = document.getElementById('filterSender').value; if (v) p.set('sender', v);
+  v = document.getElementById('filterSearch').value; if (v) p.set('search', v);
+  try {
+    var r = await fetch(API + '/messages?' + p);
+    allMessages = await r.json();
+    renderMessages();
+  } catch(e) {
+    document.getElementById('messageList').innerHTML = '<div class="empty-state"><p>Failed to load messages</p></div>';
+  }
+}
+
+function connectSSE() {
+  if (eventSource) eventSource.close();
+  eventSource = new EventSource(API + '/messages/stream/sse');
+  eventSource.addEventListener('connected', function() {
+    document.getElementById('connDot').classList.add('connected');
+    document.getElementById('connText').textContent = 'Live';
+  });
+  eventSource.addEventListener('message', function(e) {
+    try {
+      var msg = JSON.parse(e.data);
+      if (passesFilter(msg)) { allMessages.unshift(msg); renderMessages(); }
+    } catch(err) {}
+  });
+  eventSource.addEventListener('ping', function() {});
+  eventSource.onerror = function() {
+    document.getElementById('connDot').classList.remove('connected');
+    document.getElementById('connText').textContent = 'Reconnecting...';
+    setTimeout(function() { if (eventSource.readyState === EventSource.CLOSED) connectSSE(); }, 3000);
+  };
+}
+
+function passesFilter(msg) {
+  var type = document.getElementById('filterType').value;
+  var task = document.getElementById('filterTask').value;
+  var wf = document.getElementById('filterWorkflow').value;
+  var sender = document.getElementById('filterSender').value;
+  var search = document.getElementById('filterSearch').value;
+  if (type && msg.message_type !== type) return false;
+  if (task && msg.task_id != task) return false;
+  if (wf && msg.workflow_id != wf) return false;
+  if (sender && msg.sender !== sender) return false;
+  if (search && !msg.message.toLowerCase().includes(search.toLowerCase())) return false;
+  return true;
+}
+
+function applyFilters() { loadMessages(); }
+function clearFilters() {
+  ['filterType','filterTask','filterWorkflow','filterSender','filterSearch'].forEach(function(id) { document.getElementById(id).value = ''; });
+  loadMessages();
+}
+
+async function sendMessage(e) {
+  e.preventDefault();
+  var sender = document.getElementById('composeSender').value.trim();
+  var recipient = document.getElementById('composeRecipient').value.trim() || null;
+  var mt = document.getElementById('composeType').value;
+  var msg = document.getElementById('composeMessage').value.trim();
+  if (!sender || !msg) return;
+  try {
+    var r = await fetch(API + '/messages', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ sender: sender, recipient: recipient, message: msg, message_type: mt })
+    });
+    if (r.ok) document.getElementById('composeMessage').value = '';
+  } catch(err) { console.error('Failed to send:', err); }
+}
+
+document.getElementById('composeMessage').addEventListener('input', function() {
+  this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+
+loadMessages();
+connectSSE();
+setInterval(loadMessages, 60000);
+</script>
+</body>
+</html>
