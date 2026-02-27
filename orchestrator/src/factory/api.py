@@ -1,17 +1,21 @@
+import asyncio
 import hashlib
 import hmac
+import json
 import logging
 import os
 import re
 import subprocess
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from factory.db import Database
 from factory.deps import get_db, get_orchestrator
 from factory.models import (
     AgentHandoff, AgentInfo, CodeReviewCreate, HandoffCreate,
+    Message, MessageCreate, MessageType,
     Task, TaskCreate, TaskStatus, Workflow, WorkflowCreate, WorkflowStatus,
 )
 from factory.orchestrator import Orchestrator
@@ -271,6 +275,113 @@ async def get_handoff(handoff_id: int, db: Database = Depends(get_db)):
     if not handoff:
         raise HTTPException(status_code=404, detail="Handoff not found")
     return handoff
+
+
+# ── Message board endpoints ────────────────────────────────────────────
+
+
+# Global SSE subscriber list for real-time message streaming
+_message_subscribers: list[asyncio.Queue] = []
+
+
+@router.post("/messages", response_model=Message, status_code=201)
+async def create_message(
+    body: MessageCreate,
+    db: Database = Depends(get_db),
+    orch: Orchestrator = Depends(get_orchestrator),
+):
+    message = await db.create_message(body)
+
+    # Broadcast to SSE subscribers
+    msg_data = message.model_dump(mode="json")
+    msg_data["created_at"] = message.created_at.isoformat()
+    for queue in _message_subscribers:
+        try:
+            queue.put_nowait(msg_data)
+        except asyncio.QueueFull:
+            pass
+
+    # Forward to Telegram if configured
+    await orch.forward_message_to_telegram(message)
+
+    return message
+
+
+@router.get("/messages", response_model=list[Message])
+async def list_messages(
+    task_id: int | None = Query(None),
+    workflow_id: int | None = Query(None),
+    sender: str | None = Query(None),
+    message_type: str | None = Query(None),
+    since: str | None = Query(None),
+    before: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    search: str | None = Query(None),
+    db: Database = Depends(get_db),
+):
+    if search:
+        return await db.search_messages(search, limit=limit)
+    return await db.list_messages(
+        task_id=task_id,
+        workflow_id=workflow_id,
+        sender=sender,
+        message_type=message_type,
+        since=since,
+        before=before,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/messages/{message_id}", response_model=Message)
+async def get_message(message_id: int, db: Database = Depends(get_db)):
+    message = await db.get_message(message_id)
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return message
+
+
+@router.get("/messages/{message_id}/thread", response_model=list[Message])
+async def get_message_thread(message_id: int, db: Database = Depends(get_db)):
+    messages = await db.get_thread(message_id)
+    if not messages:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return messages
+
+
+@router.get("/messages/stream/sse")
+async def message_stream(request: Request):
+    """SSE endpoint for real-time message updates."""
+    queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+    _message_subscribers.append(queue)
+
+    async def event_generator():
+        try:
+            # Send initial keepalive
+            yield "event: connected\ndata: {}\n\n"
+            while True:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+                try:
+                    msg_data = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield f"event: message\ndata: {json.dumps(msg_data)}\n\n"
+                except asyncio.TimeoutError:
+                    # Send keepalive ping
+                    yield "event: ping\ndata: {}\n\n"
+        finally:
+            _message_subscribers.remove(queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/agents", response_model=list[AgentInfo])

@@ -65,6 +65,13 @@ class WorkflowConfig(BaseModel):
     max_iterations: int = 3  # Maximum review-revision iterations
 
 
+class MessageBoardConfig(BaseModel):
+    enabled: bool = True
+    telegram_forward: bool = False
+    telegram_chat_id: str = ""  # separate chat for messages; falls back to main
+    forward_types: list[str] = ["error", "question", "handoff"]  # which types to forward
+
+
 class Config(BaseModel):
     max_concurrent_agents: int = 3
     agent_timeout_minutes: int = 60  # Total max runtime for an agent
@@ -76,6 +83,7 @@ class Config(BaseModel):
     agent_templates: dict[str, AgentTemplateConfig] = {}
     surrealdb: SurrealDBConfig = SurrealDBConfig()
     workflows: dict[str, WorkflowConfig] = {}
+    message_board: MessageBoardConfig = MessageBoardConfig()
 
 
 def load_config(path: Path) -> Config:
