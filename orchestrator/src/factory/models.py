@@ -52,6 +52,52 @@ class AgentInfo(BaseModel):
     pid: int | None = None
 
 
+# ── Review models ────────────────────────────────────────────────────────
+
+
+class IssueSeverity(str, Enum):
+    BLOCKER = "blocker"
+    MAJOR = "major"
+    MINOR = "minor"
+    NIT = "nit"
+
+
+class ReviewIssue(BaseModel):
+    """A single issue found during code review."""
+    severity: IssueSeverity
+    description: str
+    file: str = ""
+    line: int | None = None
+    suggestion: str = ""
+
+
+class ReviewResult(BaseModel):
+    """Structured output from a code review."""
+    approved: bool = False
+    summary: str = ""
+    issues: list[ReviewIssue] = []
+    suggestions: list[str] = []
+
+    @property
+    def has_blockers(self) -> bool:
+        return any(i.severity == IssueSeverity.BLOCKER for i in self.issues)
+
+    @property
+    def has_blockers_or_majors(self) -> bool:
+        return any(
+            i.severity in (IssueSeverity.BLOCKER, IssueSeverity.MAJOR)
+            for i in self.issues
+        )
+
+
+class CodeReviewCreate(BaseModel):
+    """Request body for starting a code_review workflow."""
+    title: str
+    description: str = ""
+    repo: str = ""
+    plane_issue_id: str = ""
+
+
 # ── Workflow models ──────────────────────────────────────────────────────
 
 
@@ -106,6 +152,8 @@ class WorkflowStepDef(BaseModel):
     input: str = ""
     output: str = ""
     condition: str = ""
+    loop_to: str = ""
+    prompt_template: str = ""
 
 
 class WorkflowDef(BaseModel):
@@ -143,7 +191,9 @@ class WorkflowStep(BaseModel):
     output_key: str = ""
     condition: str = ""
     loop_to: str = ""  # Step name to loop back to
+    prompt_template: str = ""
     output_data: str = ""
+    iteration: int = 0
     started_at: datetime | None = None
     completed_at: datetime | None = None
 

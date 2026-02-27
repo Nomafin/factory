@@ -812,6 +812,7 @@ This summary will be used as the PR description, so write it for a human reviewe
                 output_key=step_cfg.output,
                 condition=step_cfg.condition,
                 loop_to=step_cfg.loop_to,
+                prompt_template=step_cfg.prompt_template,
             )
 
         # Mark workflow as running
