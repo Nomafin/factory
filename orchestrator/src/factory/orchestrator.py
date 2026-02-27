@@ -34,7 +34,11 @@ class Orchestrator:
             repos_dir=FACTORY_ROOT / "repos",
             worktrees_dir=FACTORY_ROOT / "worktrees",
         )
-        self.runner = AgentRunner(max_concurrent=config.max_concurrent_agents)
+        self.runner = AgentRunner(
+            max_concurrent=config.max_concurrent_agents,
+            timeout_minutes=config.agent_timeout_minutes,
+            activity_timeout_minutes=config.agent_activity_timeout_minutes,
+        )
         self.plane: PlaneClient | None = None
         if config.plane.api_key and config.plane.base_url:
             self.plane = PlaneClient(

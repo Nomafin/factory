@@ -52,4 +52,5 @@ orchestrator:
         config = load_config(Path(f.name))
 
     assert config.max_concurrent_agents == 3
-    assert config.agent_timeout_minutes == 30
+    assert config.agent_timeout_minutes == 60  # Default total timeout
+    assert config.agent_activity_timeout_minutes == 15  # Default activity timeout
