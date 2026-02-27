@@ -9,7 +9,10 @@ from pathlib import Path
 from factory.config import Config
 from factory.db import Database
 from factory.memory import AgentMemory
-from factory.models import ReviewIssue, ReviewResult, TaskCreate, TaskStatus, Workflow, WorkflowStatus
+from factory.models import (
+    HANDOFF_OUTPUT_TYPES, HandoffCreate, ReviewIssue, ReviewResult,
+    TaskCreate, TaskStatus, Workflow, WorkflowStatus,
+)
 from factory.notifier import TelegramNotifier
 from factory.plane import PlaneClient
 from factory.prompts import load_prompt
@@ -22,6 +25,9 @@ FACTORY_ROOT = Path("/opt/factory")
 
 PROGRESS_INTERVAL = 5  # Post progress to Plane every N output messages
 POLL_INTERVAL = 30  # Seconds between polling for responses on waiting tasks
+HANDOFF_MAX_CONTENT = 50000  # Max chars stored in handoff content
+HANDOFF_SUMMARY_LIMIT = 2000  # Max chars for handoff summary
+HANDOFF_INJECT_LIMIT = 8000  # Max chars injected into a prompt per handoff
 
 
 class Orchestrator:
@@ -192,8 +198,20 @@ class Orchestrator:
             except Exception as e:
                 logger.warning("Memory recall failed for task %d: %s", task_id, e)
 
+        # Fetch handoff context for this task (from previous agents)
+        handoff_context = ""
         try:
-            prompt = self._build_prompt(task.title, task.description, memories=memories)
+            handoffs = await self.db.get_handoffs_for_task(task_id)
+            if handoffs:
+                handoff_context = self._format_handoff_context(handoffs)
+        except Exception as e:
+            logger.warning("Handoff context fetch failed for task %d: %s", task_id, e)
+
+        try:
+            prompt = self._build_prompt(
+                task.title, task.description,
+                memories=memories, handoff_context=handoff_context,
+            )
             system_prompt = load_prompt(template.system_prompt_file, self.base_dir)
 
             await self.db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
@@ -241,12 +259,144 @@ class Orchestrator:
                 logger.exception("Failed to update status after agent launch error for task %d", task_id)
             return False
 
+    # ── Handoff helpers ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _detect_output_type(output: str) -> str:
+        """Classify agent output into a recognised handoff output type."""
+        lower = output.lower()
+        if any(tok in lower for tok in ("diff --git", "@@", "+++ b/", "--- a/")):
+            return "code_diff"
+        if any(tok in lower for tok in ("review comment", "nit:", "suggestion:", "change requested", "needs revision")):
+            return "review_comments"
+        if any(tok in lower for tok in ("research", "findings", "analysis", "investigation")):
+            return "research_notes"
+        if any(tok in lower for tok in ("test result", "tests pass", "tests fail", "pytest", "test suite")):
+            return "test_results"
+        if any(tok in lower for tok in ("error:", "traceback", "exception", "stack trace", "failed:")):
+            return "error_report"
+        return "general"
+
+    @staticmethod
+    def _extract_structured_output(output: str) -> dict:
+        """Try to extract structured JSON handoff data from agent output.
+
+        Agents may output a JSON block with explicit handoff metadata:
+        ```json
+        {"type": "handoff_output", "output_type": "...", "content": "...", "summary": "..."}
+        ```
+        """
+        try:
+            pattern = r'\{[^{}]*"type"\s*:\s*"handoff_output"[^{}]*\}'
+            match = re.search(pattern, output)
+            if match:
+                data = json.loads(match.group(0))
+                if data.get("type") == "handoff_output":
+                    return {
+                        "output_type": data.get("output_type", "general"),
+                        "content": data.get("content", ""),
+                        "summary": data.get("summary", ""),
+                    }
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        return {}
+
+    @staticmethod
+    def _summarize_output(output: str, limit: int = HANDOFF_SUMMARY_LIMIT) -> str:
+        """Create a summary of agent output for large content.
+
+        Looks for ## Summary / ## Changes sections first; falls back to
+        truncation with an ellipsis marker.
+        """
+        if len(output) <= limit:
+            return output
+
+        # Try to find explicit summary sections in the output
+        summary_match = re.search(
+            r"## Summary\s*\n(.*?)(?=\n## |\Z)", output, re.DOTALL,
+        )
+        changes_match = re.search(
+            r"## Changes\s*\n(.*?)(?=\n## |\Z)", output, re.DOTALL,
+        )
+
+        parts: list[str] = []
+        if summary_match:
+            parts.append(summary_match.group(1).strip())
+        if changes_match:
+            parts.append("Changes:\n" + changes_match.group(1).strip())
+
+        if parts:
+            combined = "\n\n".join(parts)
+            if len(combined) <= limit:
+                return combined
+            return combined[:limit - 3] + "..."
+
+        # Fallback: truncate
+        return output[:limit - 3] + "..."
+
+    async def _create_handoff_from_output(
+        self, task_id: int, output: str, workflow_id: int | None = None,
+    ) -> int | None:
+        """Parse agent output and persist a handoff record. Returns handoff id."""
+        # First try explicit structured output
+        structured = self._extract_structured_output(output)
+
+        if structured and structured.get("content"):
+            output_type = structured["output_type"]
+            content = structured["content"][:HANDOFF_MAX_CONTENT]
+            summary = structured.get("summary") or self._summarize_output(content)
+        else:
+            output_type = self._detect_output_type(output)
+            content = output[:HANDOFF_MAX_CONTENT]
+            summary = self._summarize_output(output)
+
+        if output_type not in HANDOFF_OUTPUT_TYPES:
+            output_type = "general"
+
+        handoff = await self.db.create_handoff(HandoffCreate(
+            from_task_id=task_id,
+            workflow_id=workflow_id,
+            output_type=output_type,
+            content=content,
+            summary=summary[:HANDOFF_SUMMARY_LIMIT],
+        ))
+        logger.info(
+            "Created handoff %d from task %d (type=%s, %d chars)",
+            handoff.id, task_id, output_type, len(content),
+        )
+        return handoff.id
+
+    @staticmethod
+    def _format_handoff_context(handoffs: list, inject_limit: int = HANDOFF_INJECT_LIMIT) -> str:
+        """Format handoff records into a prompt section for injection."""
+        if not handoffs:
+            return ""
+
+        lines: list[str] = ["\n## Context from previous agent steps"]
+        remaining = inject_limit
+
+        for h in handoffs:
+            header = f"\n### {h.output_type} (from task #{h.from_task_id})"
+            # Use summary for large content, full content if small enough
+            body = h.summary if len(h.content) > inject_limit // len(handoffs) else h.content
+            section = f"{header}\n{body}"
+
+            if len(section) > remaining:
+                section = section[:remaining - 3] + "..."
+                lines.append(section)
+                break
+            lines.append(section)
+            remaining -= len(section)
+
+        return "\n".join(lines)
+
     def _build_prompt(
         self,
         title: str,
         description: str,
         memories: list[dict] | None = None,
         clarification_history: list[dict] | None = None,
+        handoff_context: str = "",
     ) -> str:
         parts = [f"Task: {title}"]
         if description:
@@ -260,6 +410,9 @@ class Orchestrator:
                 summary = m.get("summary", "")[:150]
                 lines.append(f"- [{outcome}] Task \"{m_title}\": {summary}")
             parts.append("\n".join(lines))
+
+        if handoff_context:
+            parts.append(handoff_context)
 
         if clarification_history:
             lines = ["\n## Previous clarifications"]
@@ -395,6 +548,14 @@ This summary will be used as the PR description, so write it for a human reviewe
         if not task:
             return
 
+        # Create a handoff record capturing the agent's output
+        try:
+            await self._create_handoff_from_output(
+                task_id, output, workflow_id=task.workflow_id,
+            )
+        except Exception as e:
+            logger.warning("Failed to create handoff for task %d: %s", task_id, e)
+
         if self.memory:
             try:
                 await self.memory.store(
@@ -500,10 +661,19 @@ This summary will be used as the PR description, so write it for a human reviewe
             except Exception as e:
                 logger.warning("Memory recall failed for task %d: %s", task_id, e)
 
+        handoff_context = ""
+        try:
+            handoffs = await self.db.get_handoffs_for_task(task_id)
+            if handoffs:
+                handoff_context = self._format_handoff_context(handoffs)
+        except Exception as e:
+            logger.warning("Handoff context fetch failed for task %d: %s", task_id, e)
+
         prompt = self._build_prompt(
             task.title, task.description,
             memories=memories,
             clarification_history=history,
+            handoff_context=handoff_context,
         )
 
         template = self.config.agent_templates.get(task.agent_type)
@@ -705,6 +875,16 @@ This summary will be used as the PR description, so write it for a human reviewe
         await self.db.update_task_fields(
             task.id, workflow_id=workflow_id, workflow_step=step_index,
         )
+
+        # Link any unlinked handoffs from this workflow to this task
+        try:
+            wf_handoffs = await self.db.get_handoffs_for_workflow(workflow_id)
+            for h in wf_handoffs:
+                if h.to_task_id is None:
+                    await self.db.link_handoff_to_task(h.id, task.id)
+        except Exception as e:
+            logger.warning("Failed to link handoffs for workflow %d step %d: %s", workflow_id, step_index, e)
+
         await self.db.update_workflow_step_status(step.id, "running", task_id=task.id)
         await self.db.update_workflow_fields(workflow_id, current_step=step_index)
 

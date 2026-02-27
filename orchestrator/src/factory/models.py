@@ -165,3 +165,34 @@ class Workflow(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     steps: list[WorkflowStep] = []
+
+
+# ── Agent handoff models ─────────────────────────────────────────────────
+
+# Recognised output types for handoff content
+HANDOFF_OUTPUT_TYPES = {
+    "code_diff", "review_comments", "research_notes",
+    "test_results", "general", "error_report",
+}
+
+
+class AgentHandoff(BaseModel):
+    """A structured context record passed from one agent to the next."""
+    id: int
+    from_task_id: int
+    to_task_id: int | None = None
+    workflow_id: int | None = None
+    output_type: str = "general"
+    content: str = ""
+    summary: str = ""
+    created_at: datetime
+
+
+class HandoffCreate(BaseModel):
+    """Request body for creating a handoff record."""
+    from_task_id: int
+    to_task_id: int | None = None
+    workflow_id: int | None = None
+    output_type: str = "general"
+    content: str = ""
+    summary: str = ""

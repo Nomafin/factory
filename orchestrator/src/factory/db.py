@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import aiosqlite
 
 from factory.models import (
+    AgentHandoff, HandoffCreate,
     Task, TaskCreate, TaskStatus,
     Workflow, WorkflowCreate, WorkflowStatus, WorkflowStep, WorkflowStepDef,
 )
@@ -66,6 +67,20 @@ CREATE TABLE IF NOT EXISTS workflow_steps (
     completed_at TEXT,
     FOREIGN KEY (workflow_id) REFERENCES workflows(id),
     FOREIGN KEY (task_id) REFERENCES tasks(id)
+);
+
+CREATE TABLE IF NOT EXISTS agent_handoffs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_task_id INTEGER NOT NULL,
+    to_task_id INTEGER,
+    workflow_id INTEGER,
+    output_type TEXT DEFAULT 'general',
+    content TEXT DEFAULT '',
+    summary TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (from_task_id) REFERENCES tasks(id),
+    FOREIGN KEY (to_task_id) REFERENCES tasks(id),
+    FOREIGN KEY (workflow_id) REFERENCES workflows(id)
 );
 """
 
@@ -136,6 +151,19 @@ def _row_to_workflow_step(row: aiosqlite.Row) -> WorkflowStep:
         output_data=row["output_data"] or "",
         started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
         completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
+    )
+
+
+def _row_to_handoff(row: aiosqlite.Row) -> AgentHandoff:
+    return AgentHandoff(
+        id=row["id"],
+        from_task_id=row["from_task_id"],
+        to_task_id=row["to_task_id"],
+        workflow_id=row["workflow_id"],
+        output_type=row["output_type"] or "general",
+        content=row["content"] or "",
+        summary=row["summary"] or "",
+        created_at=datetime.fromisoformat(row["created_at"]),
     )
 
 
@@ -354,3 +382,63 @@ class Database:
         )
         row = await cursor.fetchone()
         return row["output_data"] if row else ""
+
+    # ── Handoff operations ──────────────────────────────────────────────
+
+    async def create_handoff(self, handoff: HandoffCreate) -> AgentHandoff:
+        """Create a new agent handoff record."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self._db.execute(
+            """INSERT INTO agent_handoffs
+               (from_task_id, to_task_id, workflow_id, output_type, content, summary, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                handoff.from_task_id, handoff.to_task_id, handoff.workflow_id,
+                handoff.output_type, handoff.content, handoff.summary, now,
+            ),
+        )
+        await self._db.commit()
+        return await self.get_handoff(cursor.lastrowid)
+
+    async def get_handoff(self, handoff_id: int) -> AgentHandoff | None:
+        cursor = await self._db.execute(
+            "SELECT * FROM agent_handoffs WHERE id = ?", (handoff_id,),
+        )
+        row = await cursor.fetchone()
+        return _row_to_handoff(row) if row else None
+
+    async def get_handoffs_for_task(self, task_id: int) -> list[AgentHandoff]:
+        """Get all handoffs where *to_task_id* matches (inputs for a task)."""
+        cursor = await self._db.execute(
+            "SELECT * FROM agent_handoffs WHERE to_task_id = ? ORDER BY created_at",
+            (task_id,),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_handoff(row) for row in rows]
+
+    async def get_handoffs_from_task(self, task_id: int) -> list[AgentHandoff]:
+        """Get all handoffs produced by a task."""
+        cursor = await self._db.execute(
+            "SELECT * FROM agent_handoffs WHERE from_task_id = ? ORDER BY created_at",
+            (task_id,),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_handoff(row) for row in rows]
+
+    async def get_handoffs_for_workflow(self, workflow_id: int) -> list[AgentHandoff]:
+        """Get all handoffs within a workflow."""
+        cursor = await self._db.execute(
+            "SELECT * FROM agent_handoffs WHERE workflow_id = ? ORDER BY created_at",
+            (workflow_id,),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_handoff(row) for row in rows]
+
+    async def link_handoff_to_task(self, handoff_id: int, to_task_id: int) -> AgentHandoff:
+        """Set the to_task_id on an existing handoff (when next task is created)."""
+        await self._db.execute(
+            "UPDATE agent_handoffs SET to_task_id = ? WHERE id = ?",
+            (to_task_id, handoff_id),
+        )
+        await self._db.commit()
+        return await self.get_handoff(handoff_id)
