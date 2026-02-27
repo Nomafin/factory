@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from factory.db import Database
 from factory.deps import get_db, get_orchestrator
-from factory.models import AgentInfo, Task, TaskCreate, TaskStatus, Workflow, WorkflowCreate, WorkflowStatus
+from factory.models import AgentInfo, CodeReviewCreate, Task, TaskCreate, TaskStatus, Workflow, WorkflowCreate, WorkflowStatus
 from factory.orchestrator import Orchestrator
 from factory.plane import parse_webhook_event
 
@@ -175,6 +175,41 @@ async def cancel_workflow(
     if not success:
         raise HTTPException(status_code=503, detail="Failed to cancel workflow")
     return await db.get_workflow(workflow_id)
+
+
+@router.post("/workflows/code_review", response_model=Workflow, status_code=201)
+async def create_code_review_workflow(
+    body: CodeReviewCreate,
+    db: Database = Depends(get_db),
+    orch: Orchestrator = Depends(get_orchestrator),
+):
+    """Start a code_review workflow with coder-reviewer collaboration.
+
+    This is a convenience endpoint that starts the built-in code_review workflow.
+    A single API call kicks off the coder, auto-triggers review, auto-triggers
+    revision if needed, and produces a final PR.
+    """
+    if not body.repo:
+        body.repo = orch.config.plane.default_repo
+
+    wf_config = orch.config.workflows.get("code_review")
+    if not wf_config:
+        raise HTTPException(
+            status_code=400,
+            detail="code_review workflow is not configured. "
+                   "Add it to the workflows section of config.yml.",
+        )
+
+    workflow = await orch.start_workflow(
+        workflow_name="code_review",
+        title=body.title,
+        description=body.description,
+        repo=body.repo,
+        plane_issue_id=body.plane_issue_id,
+    )
+    if not workflow:
+        raise HTTPException(status_code=503, detail="Failed to start code_review workflow")
+    return workflow
 
 
 @router.get("/agents", response_model=list[AgentInfo])

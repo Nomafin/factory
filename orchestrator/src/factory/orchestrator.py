@@ -9,7 +9,7 @@ from pathlib import Path
 from factory.config import Config
 from factory.db import Database
 from factory.memory import AgentMemory
-from factory.models import TaskCreate, TaskStatus, Workflow, WorkflowStatus
+from factory.models import ReviewIssue, ReviewResult, TaskCreate, TaskStatus, Workflow, WorkflowStatus
 from factory.notifier import TelegramNotifier
 from factory.plane import PlaneClient
 from factory.prompts import load_prompt
@@ -625,6 +625,7 @@ This summary will be used as the PR description, so write it for a human reviewe
         workflow = await self.db.create_workflow(
             name=workflow_name, title=title, description=description,
             repo=repo, plane_issue_id=plane_issue_id,
+            max_iterations=wf_config.max_iterations,
         )
 
         # Create step records
@@ -636,6 +637,7 @@ This summary will be used as the PR description, so write it for a human reviewe
                 input_key=step_cfg.input,
                 output_key=step_cfg.output,
                 condition=step_cfg.condition,
+                loop_to=step_cfg.loop_to,
             )
 
         # Mark workflow as running
@@ -717,9 +719,11 @@ This summary will be used as the PR description, so write it for a human reviewe
             return
 
         # Find the step and mark it as completed with output
+        completed_step = None
         steps = workflow.steps
         for step in steps:
             if step.step_index == completed_step_index:
+                completed_step = step
                 await self.db.update_workflow_step_status(
                     step.id, "completed", output_data=output[:10000],
                 )
@@ -727,6 +731,31 @@ This summary will be used as the PR description, so write it for a human reviewe
                 if step.task_id:
                     await self.db.update_task_status(step.task_id, TaskStatus.DONE)
                 break
+
+        # Check if this step has a loop_to directive
+        if completed_step and completed_step.loop_to:
+            should_loop = await self._should_loop(workflow, output)
+            if should_loop:
+                # Find the step index to loop back to
+                loop_target = self._find_step_by_name(workflow, completed_step.loop_to)
+                if loop_target is not None:
+                    new_iteration = workflow.iteration + 1
+                    await self.db.update_workflow_fields(
+                        workflow_id, iteration=new_iteration,
+                    )
+                    logger.info(
+                        "Workflow %d looping from step %d back to step %d (iteration %d/%d)",
+                        workflow_id, completed_step_index, loop_target,
+                        new_iteration, workflow.max_iterations,
+                    )
+                    await self._notify(
+                        f"🔄 Workflow iteration {new_iteration}/{workflow.max_iterations}: "
+                        f"{workflow.name} - {workflow.title}"
+                    )
+                    # Reset the target and subsequent steps for re-execution
+                    await self._reset_steps_for_loop(workflow_id, loop_target)
+                    await self._run_workflow_step(workflow_id, loop_target)
+                    return
 
         logger.info(
             "Workflow %d step %d completed, advancing to step %d",
@@ -736,6 +765,96 @@ This summary will be used as the PR description, so write it for a human reviewe
         # Advance to next step
         next_step = completed_step_index + 1
         await self._run_workflow_step(workflow_id, next_step)
+
+    async def _should_loop(self, workflow: Workflow, step_output: str) -> bool:
+        """Determine if a workflow step should loop back for another iteration.
+
+        Called when a step with loop_to completes. The step is typically the
+        coder's revision step. We loop back to review unless:
+        - Max iterations have been reached
+        - The coder reported inability to address feedback
+
+        The review quality check (whether issues remain) happens via the
+        condition evaluation when the review step's output triggers the
+        next revision step.
+
+        Returns True if we should loop back.
+        """
+        if workflow.iteration + 1 >= workflow.max_iterations:
+            logger.info(
+                "Workflow %d reached max iterations (%d), not looping",
+                workflow.id, workflow.max_iterations,
+            )
+            return False
+
+        # Check if coder reported inability to fix
+        if _output_indicates_unable(step_output):
+            logger.info("Workflow %d: coder reported unable to address feedback", workflow.id)
+            return False
+
+        return True
+
+    @staticmethod
+    def _find_step_by_name(workflow: Workflow, step_name: str) -> int | None:
+        """Find a step's index by matching step name from config.
+
+        We map step names based on the workflow config naming convention:
+        - 'review' maps to the reviewer step
+        - 'initial_code' maps to step 0
+        - 'revision' maps to the conditional coder step
+
+        For now, we use the step name to find matching output_key or step index.
+        """
+        # First try to find by output_key matching the name
+        for step in workflow.steps:
+            if step.output_key == step_name:
+                return step.step_index
+
+        # Try to match by agent type if the name contains the agent
+        agent_map = {"review": "reviewer", "code": "coder", "revision": "coder"}
+        for step in workflow.steps:
+            if step_name in agent_map and step.agent_type == agent_map[step_name]:
+                # If looking for 'review', find the reviewer step
+                if step_name == "review" and step.agent_type == "reviewer":
+                    return step.step_index
+
+        # Last resort: try numeric interpretation
+        try:
+            idx = int(step_name)
+            if 0 <= idx < len(workflow.steps):
+                return idx
+        except ValueError:
+            pass
+
+        return None
+
+    async def _reset_steps_for_loop(self, workflow_id: int, from_step_index: int):
+        """Reset workflow steps from a given index onwards for re-execution.
+
+        Creates new step records for the loop iteration while preserving
+        step configuration.
+        """
+        workflow = await self.db.get_workflow(workflow_id)
+        if not workflow:
+            return
+
+        for step in workflow.steps:
+            if step.step_index >= from_step_index:
+                # Reset the step status so it can run again
+                await self.db.update_workflow_step_status(
+                    step.id, "pending",
+                )
+                # Clear previous timestamps and task linkage for re-run
+                await self._db_clear_step_for_rerun(step.id)
+
+    async def _db_clear_step_for_rerun(self, step_id: int):
+        """Clear step's task_id, output_data, and timestamps for a new iteration."""
+        await self.db._db.execute(
+            "UPDATE workflow_steps SET task_id = NULL, output_data = '', "
+            "started_at = NULL, completed_at = NULL WHERE id = ?",
+            (step_id,),
+        )
+        await self.db._db.commit()
 
     async def _complete_workflow(self, workflow_id: int):
         """Mark a workflow as completed and handle final outputs."""
@@ -821,8 +940,9 @@ This summary will be used as the PR description, so write it for a human reviewe
         """Evaluate a simple condition for conditional branching.
 
         Supported conditions:
-        - "has_issues": Check if previous step output mentions issues/problems
+        - "has_issues": Check if previous step output indicates issues (prefers structured review)
         - "no_issues": Inverse of has_issues
+        - "review_approved": Check if structured review was approved
         - Any other string is treated as a key to check in previous step outputs
         """
         # Get all completed step outputs for this workflow
@@ -836,23 +956,23 @@ This summary will be used as the PR description, so write it for a human reviewe
         if not last_output:
             return True  # No previous output, run the step by default
 
-        lower_output = last_output.lower()
+        # Try structured review parsing first
+        review = parse_review_output(last_output)
 
         if condition == "has_issues":
-            issue_indicators = [
-                "issue", "bug", "error", "problem", "fix needed",
-                "needs revision", "change requested", "reject",
-                "improvement needed", "concern",
-            ]
-            return any(indicator in lower_output for indicator in issue_indicators)
+            if review is not None:
+                return not review.approved and review.has_blockers_or_majors
+            return _has_review_issues(last_output)
 
         if condition == "no_issues":
-            issue_indicators = [
-                "issue", "bug", "error", "problem", "fix needed",
-                "needs revision", "change requested", "reject",
-                "improvement needed", "concern",
-            ]
-            return not any(indicator in lower_output for indicator in issue_indicators)
+            if review is not None:
+                return review.approved or not review.has_blockers_or_majors
+            return not _has_review_issues(last_output)
+
+        if condition == "review_approved":
+            if review is not None:
+                return review.approved
+            return not _has_review_issues(last_output)
 
         # Check for a specific key in output (e.g., check if a named output exists)
         output_data = await self.db.get_step_output(workflow_id, condition)
@@ -890,3 +1010,100 @@ This summary will be used as the PR description, so write it for a human reviewe
 
 def _slugify(text: str) -> str:
     return "-".join(text.lower().split()[:5]).replace("/", "-")[:40]
+
+
+def parse_review_output(output: str) -> ReviewResult | None:
+    """Parse structured review JSON from agent output.
+
+    Expects output containing a JSON block with the review result:
+    ```json
+    {"approved": false, "summary": "...", "issues": [...], "suggestions": [...]}
+    ```
+
+    Returns None if no structured review JSON is found.
+    """
+
+    def _build_review(data: dict) -> ReviewResult:
+        issues = []
+        for issue_data in data.get("issues", []):
+            severity = issue_data.get("severity", "minor")
+            if severity not in ("blocker", "major", "minor", "nit"):
+                severity = "minor"
+            issues.append(ReviewIssue(
+                severity=severity,
+                description=issue_data.get("description", ""),
+                file=issue_data.get("file", ""),
+                line=issue_data.get("line"),
+                suggestion=issue_data.get("suggestion", ""),
+            ))
+        return ReviewResult(
+            approved=data.get("approved", False),
+            summary=data.get("summary", ""),
+            issues=issues,
+            suggestions=data.get("suggestions", []),
+        )
+
+    # Try to find a fenced code block first
+    patterns = [
+        r'```json\s*\n(.*?)\n\s*```',
+        r'```\s*\n(.*?)\n\s*```',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, output, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group(1))
+                if "approved" in data:
+                    return _build_review(data)
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+
+    # Fallback: find raw JSON by brace-counting for nested objects
+    start_idx = output.find('{')
+    while start_idx != -1:
+        depth = 0
+        for i in range(start_idx, len(output)):
+            if output[i] == '{':
+                depth += 1
+            elif output[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    candidate = output[start_idx:i + 1]
+                    try:
+                        data = json.loads(candidate)
+                        if "approved" in data:
+                            return _build_review(data)
+                    except (json.JSONDecodeError, KeyError, TypeError):
+                        pass
+                    break
+        start_idx = output.find('{', start_idx + 1)
+
+    return None
+
+
+def _has_review_issues(output: str) -> bool:
+    """Fallback check for review issues in unstructured output."""
+    lower_output = output.lower()
+    issue_indicators = [
+        "issue", "bug", "error", "problem", "fix needed",
+        "needs revision", "change requested", "reject",
+        "improvement needed", "concern",
+    ]
+    return any(indicator in lower_output for indicator in issue_indicators)
+
+
+def _output_indicates_unable(output: str) -> bool:
+    """Check if the coder's output indicates inability to address feedback."""
+    lower = output.lower()
+    unable_indicators = [
+        "unable to address",
+        "cannot fix",
+        "unable to resolve",
+        "cannot address",
+        "not possible to fix",
+        "beyond scope",
+        "cannot be resolved",
+        "unable to implement",
+    ]
+    return any(indicator in lower for indicator in unable_indicators)

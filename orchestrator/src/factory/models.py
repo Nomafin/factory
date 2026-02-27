@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -62,6 +63,43 @@ class WorkflowStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class ReviewIssue(BaseModel):
+    """A single issue found during code review."""
+    severity: Literal["blocker", "major", "minor", "nit"]
+    description: str
+    file: str = ""
+    line: int | None = None
+    suggestion: str = ""
+
+
+class ReviewResult(BaseModel):
+    """Structured output from a code review."""
+    approved: bool = False
+    summary: str = ""
+    issues: list[ReviewIssue] = []
+    suggestions: list[str] = []
+
+    @property
+    def has_blockers_or_majors(self) -> bool:
+        return any(i.severity in ("blocker", "major") for i in self.issues)
+
+    @property
+    def blocker_count(self) -> int:
+        return sum(1 for i in self.issues if i.severity == "blocker")
+
+    @property
+    def major_count(self) -> int:
+        return sum(1 for i in self.issues if i.severity == "major")
+
+    @property
+    def minor_count(self) -> int:
+        return sum(1 for i in self.issues if i.severity == "minor")
+
+    @property
+    def nit_count(self) -> int:
+        return sum(1 for i in self.issues if i.severity == "nit")
+
+
 class WorkflowStepDef(BaseModel):
     """Definition of a single step in a workflow template."""
     agent: str
@@ -85,6 +123,14 @@ class WorkflowCreate(BaseModel):
     plane_issue_id: str = ""
 
 
+class CodeReviewCreate(BaseModel):
+    """Request body for starting a code_review workflow."""
+    title: str
+    description: str = ""
+    repo: str = ""
+    plane_issue_id: str = ""
+
+
 class WorkflowStep(BaseModel):
     """Runtime state of a single workflow step."""
     id: int
@@ -96,6 +142,7 @@ class WorkflowStep(BaseModel):
     input_key: str = ""
     output_key: str = ""
     condition: str = ""
+    loop_to: str = ""  # Step name to loop back to
     output_data: str = ""
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -110,6 +157,8 @@ class Workflow(BaseModel):
     repo: str = ""
     status: WorkflowStatus = WorkflowStatus.PENDING
     current_step: int = 0
+    iteration: int = 0
+    max_iterations: int = 3
     plane_issue_id: str = ""
     error: str = ""
     created_at: datetime

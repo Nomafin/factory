@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS workflows (
     repo TEXT DEFAULT '',
     status TEXT DEFAULT 'pending',
     current_step INTEGER DEFAULT 0,
+    iteration INTEGER DEFAULT 0,
+    max_iterations INTEGER DEFAULT 3,
     plane_issue_id TEXT DEFAULT '',
     error TEXT DEFAULT '',
     created_at TEXT NOT NULL,
@@ -58,6 +60,7 @@ CREATE TABLE IF NOT EXISTS workflow_steps (
     input_key TEXT DEFAULT '',
     output_key TEXT DEFAULT '',
     condition TEXT DEFAULT '',
+    loop_to TEXT DEFAULT '',
     output_data TEXT DEFAULT '',
     started_at TEXT,
     completed_at TEXT,
@@ -70,6 +73,9 @@ MIGRATIONS = [
     "ALTER TABLE tasks ADD COLUMN clarification_context TEXT DEFAULT '';",
     "ALTER TABLE tasks ADD COLUMN workflow_id INTEGER;",
     "ALTER TABLE tasks ADD COLUMN workflow_step INTEGER;",
+    "ALTER TABLE workflows ADD COLUMN iteration INTEGER DEFAULT 0;",
+    "ALTER TABLE workflows ADD COLUMN max_iterations INTEGER DEFAULT 3;",
+    "ALTER TABLE workflow_steps ADD COLUMN loop_to TEXT DEFAULT '';",
 ]
 
 
@@ -95,6 +101,7 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
 
 
 def _row_to_workflow(row: aiosqlite.Row) -> Workflow:
+    keys = row.keys()
     return Workflow(
         id=row["id"],
         name=row["name"],
@@ -103,6 +110,8 @@ def _row_to_workflow(row: aiosqlite.Row) -> Workflow:
         repo=row["repo"],
         status=WorkflowStatus(row["status"]),
         current_step=row["current_step"],
+        iteration=row["iteration"] if "iteration" in keys else 0,
+        max_iterations=row["max_iterations"] if "max_iterations" in keys else 3,
         plane_issue_id=row["plane_issue_id"],
         error=row["error"],
         created_at=datetime.fromisoformat(row["created_at"]),
@@ -112,6 +121,7 @@ def _row_to_workflow(row: aiosqlite.Row) -> Workflow:
 
 
 def _row_to_workflow_step(row: aiosqlite.Row) -> WorkflowStep:
+    keys = row.keys()
     return WorkflowStep(
         id=row["id"],
         workflow_id=row["workflow_id"],
@@ -122,6 +132,7 @@ def _row_to_workflow_step(row: aiosqlite.Row) -> WorkflowStep:
         input_key=row["input_key"],
         output_key=row["output_key"],
         condition=row["condition"],
+        loop_to=row["loop_to"] if "loop_to" in keys else "",
         output_data=row["output_data"] or "",
         started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
         completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
@@ -228,12 +239,13 @@ class Database:
     async def create_workflow(
         self, name: str, title: str, description: str = "",
         repo: str = "", plane_issue_id: str = "",
+        max_iterations: int = 3,
     ) -> Workflow:
         now = datetime.now(timezone.utc).isoformat()
         cursor = await self._db.execute(
-            """INSERT INTO workflows (name, title, description, repo, plane_issue_id, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (name, title, description, repo, plane_issue_id, now),
+            """INSERT INTO workflows (name, title, description, repo, plane_issue_id, max_iterations, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (name, title, description, repo, plane_issue_id, max_iterations, now),
         )
         await self._db.commit()
         return await self.get_workflow(cursor.lastrowid)
@@ -291,12 +303,13 @@ class Database:
     async def create_workflow_step(
         self, workflow_id: int, step_index: int, agent_type: str,
         input_key: str = "", output_key: str = "", condition: str = "",
+        loop_to: str = "",
     ) -> WorkflowStep:
         cursor = await self._db.execute(
             """INSERT INTO workflow_steps
-               (workflow_id, step_index, agent_type, input_key, output_key, condition)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (workflow_id, step_index, agent_type, input_key, output_key, condition),
+               (workflow_id, step_index, agent_type, input_key, output_key, condition, loop_to)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (workflow_id, step_index, agent_type, input_key, output_key, condition, loop_to),
         )
         await self._db.commit()
         return await self.get_workflow_step(cursor.lastrowid)

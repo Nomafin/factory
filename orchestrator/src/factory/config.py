@@ -56,10 +56,12 @@ class WorkflowStepConfig(BaseModel):
     input: str = ""
     output: str = ""
     condition: str = ""
+    loop_to: str = ""  # Name of step to loop back to (for iterative workflows)
 
 
 class WorkflowConfig(BaseModel):
     steps: list[WorkflowStepConfig]
+    max_iterations: int = 3  # Maximum review-revision iterations
 
 
 class Config(BaseModel):
