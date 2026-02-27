@@ -57,6 +57,7 @@ class WorkflowStepConfig(BaseModel):
     output: str = ""
     condition: str = ""
     loop_to: str = ""  # Name of step to loop back to (for iterative workflows)
+    prompt_template: str = ""
 
 
 class WorkflowConfig(BaseModel):

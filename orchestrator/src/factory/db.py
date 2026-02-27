@@ -62,7 +62,9 @@ CREATE TABLE IF NOT EXISTS workflow_steps (
     output_key TEXT DEFAULT '',
     condition TEXT DEFAULT '',
     loop_to TEXT DEFAULT '',
+    prompt_template TEXT DEFAULT '',
     output_data TEXT DEFAULT '',
+    iteration INTEGER DEFAULT 0,
     started_at TEXT,
     completed_at TEXT,
     FOREIGN KEY (workflow_id) REFERENCES workflows(id),
@@ -91,6 +93,7 @@ MIGRATIONS = [
     "ALTER TABLE workflows ADD COLUMN iteration INTEGER DEFAULT 0;",
     "ALTER TABLE workflows ADD COLUMN max_iterations INTEGER DEFAULT 3;",
     "ALTER TABLE workflow_steps ADD COLUMN loop_to TEXT DEFAULT '';",
+    "ALTER TABLE workflow_steps ADD COLUMN prompt_template TEXT DEFAULT '';",
 ]
 
 
@@ -148,7 +151,9 @@ def _row_to_workflow_step(row: aiosqlite.Row) -> WorkflowStep:
         output_key=row["output_key"],
         condition=row["condition"],
         loop_to=row["loop_to"] if "loop_to" in keys else "",
+        prompt_template=row["prompt_template"] if "prompt_template" in keys else "",
         output_data=row["output_data"] or "",
+        iteration=row["iteration"] if "iteration" in keys else 0,
         started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
         completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
     )
@@ -331,13 +336,13 @@ class Database:
     async def create_workflow_step(
         self, workflow_id: int, step_index: int, agent_type: str,
         input_key: str = "", output_key: str = "", condition: str = "",
-        loop_to: str = "",
+        loop_to: str = "", prompt_template: str = "",
     ) -> WorkflowStep:
         cursor = await self._db.execute(
             """INSERT INTO workflow_steps
-               (workflow_id, step_index, agent_type, input_key, output_key, condition, loop_to)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (workflow_id, step_index, agent_type, input_key, output_key, condition, loop_to),
+               (workflow_id, step_index, agent_type, input_key, output_key, condition, loop_to, prompt_template)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (workflow_id, step_index, agent_type, input_key, output_key, condition, loop_to, prompt_template),
         )
         await self._db.commit()
         return await self.get_workflow_step(cursor.lastrowid)
@@ -371,6 +376,30 @@ class Database:
         await self._db.execute(f"UPDATE workflow_steps SET {set_clause} WHERE id = ?", values)
         await self._db.commit()
         return await self.get_workflow_step(step_id)
+
+    async def increment_workflow_iteration(self, workflow_id: int) -> int:
+        """Increment the iteration count and return the new value."""
+        await self._db.execute(
+            "UPDATE workflows SET iteration_count = iteration_count + 1 WHERE id = ?",
+            (workflow_id,),
+        )
+        await self._db.commit()
+        cursor = await self._db.execute(
+            "SELECT iteration_count FROM workflows WHERE id = ?", (workflow_id,),
+        )
+        row = await cursor.fetchone()
+        return row["iteration_count"] if row else 0
+
+    async def reset_step_for_loop(self, step_id: int, iteration: int):
+        """Reset a workflow step so it can run again in a loop iteration."""
+        await self._db.execute(
+            """UPDATE workflow_steps
+               SET status = 'pending', task_id = NULL, output_data = '',
+                   iteration = ?, started_at = NULL, completed_at = NULL
+               WHERE id = ?""",
+            (iteration, step_id),
+        )
+        await self._db.commit()
 
     async def get_step_output(self, workflow_id: int, output_key: str) -> str:
         """Retrieve stored output data from a previous step by its output key."""
