@@ -8,3 +8,7 @@ repos/
 .venv/
 config.yml
 prompts/private/
+
+# Deploy artifacts
+deploy.lock
+deploy.log
