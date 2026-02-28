@@ -460,6 +460,9 @@ async def _handle_plane_comment_webhook(
         return {"status": "ignored", "reason": "no waiting task for issue"}
 
     comment_html = data.get("comment_html", "")
+    # Skip our own system comments
+    if "Agent needs clarification" in comment_html or "Progress (step" in comment_html:
+        return {"status": "ignored", "reason": "system comment"}
     response_text = re.sub(r"<[^>]+>", "", comment_html).strip()
     if not response_text:
         return {"status": "ignored", "reason": "empty comment"}
