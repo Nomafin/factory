@@ -19,7 +19,7 @@ from factory.plane import PlaneClient
 from factory.prompts import load_prompt
 from factory.revision_context import RevisionContext, build_revision_context
 from factory.runner import AgentRunner
-from factory.workspace import RepoManager
+from factory.workspace import RepoManager, cleanup_task_worktree
 
 logger = logging.getLogger(__name__)
 
@@ -693,6 +693,33 @@ This summary will be used as the PR description, so write it for a human reviewe
         except RuntimeError:
             pass
 
+    async def _cleanup_task_worktree(self, task):
+        """Best-effort cleanup of worktree and branches for a failed/cancelled task.
+
+        Removes the worktree directory and local branch. Remote branches are
+        only deleted when no PR was created (otherwise the branch is still
+        useful for debugging or retries).
+        """
+        if not task.branch_name or not task.repo:
+            return
+
+        try:
+            result = await cleanup_task_worktree(
+                repos_dir=self.repo_manager.repos_dir,
+                worktrees_dir=self.repo_manager.worktrees_dir,
+                repo_name=task.repo,
+                branch_name=task.branch_name,
+                delete_remote_branch=not task.pr_url,
+            )
+            logger.info(
+                "Worktree cleanup for task %d (branch %s): %s",
+                task.id, task.branch_name, result,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Worktree cleanup failed for task %d: %s", task.id, exc,
+            )
+
     @staticmethod
     def _extract_clarification(output: str) -> str | None:
         """Extract a clarification question from agent output, if present."""
@@ -882,6 +909,11 @@ This summary will be used as the PR description, so write it for a human reviewe
                 except Exception as e:
                     logger.warning("Failed to store failure memory for task %d: %s", task_id, e)
 
+            # Clean up worktree and branches for failed task (best-effort).
+            # Only delete remote branch if no PR was created (otherwise the
+            # branch is still useful for debugging or retries).
+            await self._cleanup_task_worktree(task)
+
             # If this task is part of a workflow, fail the workflow
             if task.workflow_id is not None and task.workflow_step is not None:
                 await self._fail_workflow(
@@ -1058,6 +1090,9 @@ This summary will be used as the PR description, so write it for a human reviewe
             await self.db.update_task_status(task_id, TaskStatus.CANCELLED)
             task = await self.db.get_task(task_id)
             if task:
+                # Clean up worktree and branches for cancelled task
+                await self._cleanup_task_worktree(task)
+
                 await self._update_plane_state(
                     task.plane_issue_id, self.config.plane.states.cancelled,
                     "Task cancelled"
