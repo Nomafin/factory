@@ -1,0 +1,30 @@
+# Traefik Static Configuration
+# Factory Docker Test Environments
+
+api:
+  dashboard: true
+  insecure: true  # Dashboard on :8080
+
+entryPoints:
+  web:
+    address: ":80"
+    # No redirect - nginx handles SSL termination
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: factory-preview
+    watch: true
+
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/cert.pem
+        keyFile: /certs/key.pem
+
+log:
+  level: INFO
+
+accessLog: {}

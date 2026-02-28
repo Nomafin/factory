@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  traefik:
+    image: traefik:latest
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - "8180:80"    # HTTP (behind nginx)
+      - "8443:443"   # HTTPS (behind nginx)
+      - "8181:8080"  # Dashboard
+    environment:
+      - DOCKER_API_VERSION=1.44
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./certs:/certs:ro
+    networks:
+      - factory-preview
+
+networks:
+  factory-preview:
+    external: true
