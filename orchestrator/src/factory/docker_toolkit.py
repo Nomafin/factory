@@ -2,6 +2,47 @@
 
 Provides a simple interface for agents to spin up and tear down
 Docker test/preview environments with Traefik auto-discovery.
+
+## Compose File Integration
+
+When calling `spin_up()`, the following environment variables are passed
+to your docker-compose file:
+
+- `FACTORY_TASK_ID` — The task ID (e.g., "42")
+- `FACTORY_REPO` — The repository name (e.g., "acme/webapp")
+- `FACTORY_HOSTNAME` — The public hostname (e.g., "task-42.preview.factory.6a.fi")
+- `FACTORY_SERVICE_PORT` — The service port passed to spin_up()
+
+Your compose file should use these to set Factory labels (for cleanup scripts)
+and Traefik labels (for routing). Example:
+
+```yaml
+services:
+  app:
+    build: .
+    labels:
+      # Factory labels (required for cleanup scripts)
+      - "factory.task-id=${FACTORY_TASK_ID}"
+      - "factory.repo=${FACTORY_REPO}"
+      - "factory.env-type=test"
+      - "factory.created=${FACTORY_CREATED:-0}"
+      # Traefik labels (required for routing)
+      - "traefik.enable=true"
+      - "traefik.http.routers.app.rule=Host(`${FACTORY_HOSTNAME}`)"
+      - "traefik.http.routers.app.entrypoints=websecure"
+      - "traefik.http.routers.app.tls=true"
+      - "traefik.http.services.app.loadbalancer.server.port=${FACTORY_SERVICE_PORT}"
+    networks:
+      - default
+      - factory-preview
+
+networks:
+  factory-preview:
+    external: true
+```
+
+Alternatively, use `get_labels()` and `get_traefik_labels()` to generate
+labels programmatically if building compose files dynamically.
 """
 
 import logging
