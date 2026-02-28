@@ -8,6 +8,7 @@ from pathlib import Path
 
 from factory.config import Config
 from factory.db import Database
+from factory.docker_toolkit import cleanup_test_environments
 from factory.memory import AgentMemory
 from factory.models import (
     HANDOFF_OUTPUT_TYPES, HandoffCreate, MessageCreate, MessageType,
@@ -572,6 +573,18 @@ This summary will be used as the PR description, so write it for a human reviewe
     def _on_agent_complete(self, task_id: int, returncode: int, output: str):
         self._output_counts.pop(task_id, None)
         self._output_buffers.pop(task_id, None)
+
+        # Best-effort cleanup of any Docker test containers spawned by this task.
+        # Runs synchronously before async completion handlers to ensure containers
+        # are cleaned up even if the event loop is shutting down.
+        # Preview environments are intentionally left running.
+        try:
+            cleanup_test_environments(task_id)
+        except Exception as exc:
+            logger.warning(
+                "Docker cleanup failed for task %d: %s", task_id, exc,
+            )
+
         try:
             loop = asyncio.get_running_loop()
             if returncode == 0:

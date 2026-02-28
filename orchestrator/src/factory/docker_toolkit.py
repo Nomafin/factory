@@ -380,3 +380,95 @@ def spin_up_preview_env(
     task_id, repo = _get_task_context()
     env = DockerEnvironment(task_id, repo, pr_number=pr_number)
     return env.spin_up(compose_file, **kwargs)
+
+
+# ── Task-lifecycle cleanup ──────────────────────────────────────────────
+
+
+def cleanup_test_environments(task_id: int) -> int:
+    """Remove test environments for a completed task.
+
+    Finds all Docker containers with matching ``factory.task-id`` **and**
+    ``factory.env-type=test`` labels, then stops and removes them.
+
+    Preview environments (``factory.env-type=preview``) are intentionally
+    left running — they are cleaned up by a separate cron job when the
+    associated PR is merged or closed.
+
+    This function is best-effort: individual container failures are logged
+    but do not raise exceptions.
+
+    Args:
+        task_id: The Factory task ID whose test containers should be removed.
+
+    Returns:
+        The number of containers that were successfully removed.
+    """
+    logger.info("Cleaning up test environments for task %d", task_id)
+
+    try:
+        result = subprocess.run(
+            [
+                "docker", "ps", "-aq",
+                "--filter", f"label=factory.task-id={task_id}",
+                "--filter", "label=factory.env-type=test",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        logger.warning(
+            "Failed to list containers for task %d: %s", task_id, exc,
+        )
+        return 0
+
+    if result.returncode != 0:
+        logger.warning(
+            "docker ps failed for task %d (rc=%d): %s",
+            task_id, result.returncode, result.stderr.strip(),
+        )
+        return 0
+
+    container_ids = [cid for cid in result.stdout.strip().split("\n") if cid]
+
+    if not container_ids:
+        logger.info("No test containers found for task %d", task_id)
+        return 0
+
+    logger.info(
+        "Found %d test container(s) for task %d: %s",
+        len(container_ids), task_id, ", ".join(container_ids),
+    )
+
+    removed = 0
+    for container_id in container_ids:
+        try:
+            subprocess.run(
+                ["docker", "stop", container_id],
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+            subprocess.run(
+                ["docker", "rm", container_id],
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+            logger.info(
+                "Removed test container %s for task %d",
+                container_id, task_id,
+            )
+            removed += 1
+        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+            logger.warning(
+                "Failed to remove container %s for task %d: %s",
+                container_id, task_id, exc,
+            )
+
+    logger.info(
+        "Cleaned up %d/%d test container(s) for task %d",
+        removed, len(container_ids), task_id,
+    )
+    return removed
