@@ -21,6 +21,9 @@ dev = [
     "pytest-asyncio>=0.25.0",
     "httpx>=0.28.0",
 ]
+playwright = [
+    "playwright>=1.40.0",
+]
 
 [build-system]
 requires = ["hatchling"]
