@@ -12,6 +12,7 @@ to your docker-compose file:
 - `FACTORY_REPO` — The repository name (e.g., "acme/webapp")
 - `FACTORY_HOSTNAME` — The public hostname (e.g., "task-42.preview.factory.6a.fi")
 - `FACTORY_SERVICE_PORT` — The service port passed to spin_up()
+- `FACTORY_CREATED` — Unix timestamp of environment creation
 
 Your compose file should use these to set Factory labels (for cleanup scripts)
 and Traefik labels (for routing). Example:
@@ -41,6 +42,11 @@ networks:
     external: true
 ```
 
+**Important:** Factory generates a compose override file that enforces the
+correct Traefik labels (``websecure`` entrypoint + ``tls=true``) regardless
+of what the agent's compose file contains.  You do not need to get Traefik
+labels perfect — Factory will fix them at spin-up time.
+
 Alternatively, use `get_labels()` and `get_traefik_labels()` to generate
 labels programmatically if building compose files dynamically.
 """
@@ -52,6 +58,7 @@ import time
 from typing import Optional
 
 import httpx
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +137,11 @@ class DockerEnvironment:
     ) -> str:
         """Start environment, wait for healthy, return URL.
 
+        Generates a compose override file that enforces correct Traefik
+        labels (``websecure`` entrypoint + ``tls=true``) and Factory
+        metadata labels, so environments always get HTTPS routing
+        regardless of what the agent's compose file contains.
+
         Args:
             compose_file: Path to the docker-compose file.
             service_port: Port the main service listens on.
@@ -157,14 +169,19 @@ class DockerEnvironment:
                 "FACTORY_REPO": self.repo,
                 "FACTORY_HOSTNAME": hostname,
                 "FACTORY_SERVICE_PORT": str(service_port),
+                "FACTORY_CREATED": str(int(time.time())),
             }
         )
 
-        # Combine factory + traefik labels
-        all_labels = {**self.get_labels(), **self.get_traefik_labels(service_port)}
-        label_args: list[str] = []
-        for key, value in all_labels.items():
-            label_args.extend(["--label", f"{key}={value}"])
+        # Validate the compose file and log warnings
+        warnings = validate_compose_file(compose_file)
+        for warning in warnings:
+            logger.warning("Compose validation: %s", warning)
+
+        # Generate override file with correct Traefik/Factory labels
+        override_path = self._generate_compose_override(
+            compose_file, service_port,
+        )
 
         logger.info(
             "Spinning up environment for task %d (project=%s, compose=%s)",
@@ -173,22 +190,31 @@ class DockerEnvironment:
             compose_file,
         )
 
-        # Start with docker compose
-        subprocess.run(
-            [
-                "docker",
-                "compose",
-                "-p",
-                self.project_name,
-                "-f",
-                compose_file,
-                "up",
-                "-d",
-            ],
-            env=env,
-            check=True,
-            capture_output=True,
-        )
+        # Build the compose command — use override file to enforce correct labels
+        compose_cmd = [
+            "docker",
+            "compose",
+            "-p",
+            self.project_name,
+            "-f",
+            compose_file,
+        ]
+        if override_path:
+            compose_cmd.extend(["-f", override_path])
+        compose_cmd.extend(["up", "-d"])
+
+        try:
+            # Start with docker compose
+            subprocess.run(
+                compose_cmd,
+                env=env,
+                check=True,
+                capture_output=True,
+            )
+        finally:
+            # Clean up the override file
+            if override_path and os.path.exists(override_path):
+                os.unlink(override_path)
 
         # Connect containers to the factory-preview network
         self._connect_to_network()
@@ -204,6 +230,89 @@ class DockerEnvironment:
 
         logger.info("Environment ready at %s", url)
         return url
+
+    def _generate_compose_override(
+        self,
+        compose_file: str,
+        service_port: int,
+    ) -> str:
+        """Generate a compose override file with correct Factory/Traefik labels.
+
+        Reads the original compose file to discover service names, then
+        creates a temporary override that sets the correct Traefik routing
+        labels (``websecure`` entrypoint, ``tls=true``) and Factory metadata
+        labels on the first service.
+
+        The override file uses YAML mapping syntax for labels so that
+        Docker Compose merges individual label keys instead of replacing
+        the entire labels list.
+
+        Args:
+            compose_file: Path to the original docker-compose file.
+            service_port: Port the main service listens on.
+
+        Returns:
+            Path to the generated override file, or empty string on failure.
+        """
+        try:
+            with open(compose_file) as f:
+                compose_data = yaml.safe_load(f)
+        except (FileNotFoundError, yaml.YAMLError) as exc:
+            logger.warning(
+                "Could not parse compose file %s: %s", compose_file, exc,
+            )
+            return ""
+
+        if not isinstance(compose_data, dict):
+            logger.warning("Invalid compose file structure in %s", compose_file)
+            return ""
+
+        services = compose_data.get("services", {})
+        if not services:
+            logger.warning("No services found in compose file %s", compose_file)
+            return ""
+
+        # Use the first service as the main routable service
+        service_name = next(iter(services))
+
+        # Build all required labels
+        all_labels = {**self.get_labels(), **self.get_traefik_labels(service_port)}
+
+        # Generate override YAML as a string to avoid yaml.dump issues
+        # with special characters (backticks in Host() rules, etc.)
+        label_lines = []
+        for key, value in all_labels.items():
+            label_lines.append(f'      {key}: "{value}"')
+
+        override_content = (
+            f"services:\n"
+            f"  {service_name}:\n"
+            f"    labels:\n"
+            + "\n".join(label_lines) + "\n"
+            f"    networks:\n"
+            f"      - default\n"
+            f"      - factory-preview\n"
+            f"networks:\n"
+            f"  factory-preview:\n"
+            f"    external: true\n"
+        )
+
+        override_path = os.path.join(
+            os.path.dirname(os.path.abspath(compose_file)),
+            f".factory-override-{self.task_id}.yml",
+        )
+        try:
+            with open(override_path, "w") as f:
+                f.write(override_content)
+        except OSError as exc:
+            logger.warning(
+                "Could not write compose override to %s: %s",
+                override_path, exc,
+            )
+            return ""
+
+        logger.info("Generated compose override at %s", override_path)
+        return override_path
 
     def tear_down(self, compose_file: str = "docker-compose.yml") -> None:
         """Stop and remove the environment.
@@ -253,6 +362,60 @@ class DockerEnvironment:
                     capture_output=True,
                     # Don't check — may already be connected
                 )
+
+
+# ── Validation ─────────────────────────────────────────────────────────
+
+
+def validate_compose_file(compose_file: str) -> list[str]:
+    """Validate a docker-compose file for common Factory/Traefik issues.
+
+    Checks for problems that would prevent HTTPS routing or proper
+    container lifecycle management:
+
+    - Wrong Traefik entrypoint (``web`` instead of ``websecure``)
+    - Missing ``tls=true`` label when Traefik is enabled
+    - Missing ``factory-preview`` network declaration
+
+    Args:
+        compose_file: Path to the docker-compose file to validate.
+
+    Returns:
+        A list of warning messages.  Empty list means no issues found.
+    """
+    warnings: list[str] = []
+
+    try:
+        with open(compose_file) as f:
+            content = f.read()
+    except FileNotFoundError:
+        return [f"Compose file not found: {compose_file}"]
+
+    # Check for wrong entrypoint — HTTP-only "web" instead of HTTPS "websecure"
+    if "entrypoints=web" in content and "entrypoints=websecure" not in content:
+        warnings.append(
+            "Compose file uses entrypoints=web (HTTP) instead of "
+            "entrypoints=websecure (HTTPS). Factory will override this "
+            "with the correct HTTPS entrypoint."
+        )
+
+    # Check for missing tls label when Traefik is enabled
+    has_traefik = "traefik.enable" in content
+    has_tls = ".tls=true" in content or '.tls="true"' in content or ".tls: " in content
+    if has_traefik and not has_tls:
+        warnings.append(
+            "Compose file enables Traefik but is missing tls=true label. "
+            "Factory will add the correct TLS configuration."
+        )
+
+    # Check for missing factory-preview network
+    if "factory-preview" not in content:
+        warnings.append(
+            "Compose file is missing factory-preview network declaration. "
+            "Factory will add this via the compose override."
+        )
+
+    return warnings
 
 
 # ── Helper functions ────────────────────────────────────────────────────

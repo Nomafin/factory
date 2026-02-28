@@ -4,12 +4,15 @@ Unit tests for label generation, URL construction, and Traefik labels.
 Integration test for spinning up nginx, verifying the URL, and tearing down.
 """
 
+import os
 import subprocess
 import time
 from unittest.mock import MagicMock, call, patch
 
 import httpx
 import pytest
+
+import yaml
 
 from factory.docker_toolkit import (
     FACTORY_NETWORK,
@@ -21,6 +24,7 @@ from factory.docker_toolkit import (
     spin_up_preview_env,
     spin_up_test_env,
     tear_down_test_env,
+    validate_compose_file,
 )
 
 
@@ -218,6 +222,36 @@ class TestSpinUp:
     @patch("factory.docker_toolkit._wait_for_healthy")
     @patch("factory.docker_toolkit._ensure_network")
     @patch("factory.docker_toolkit.subprocess.run")
+    def test_spin_up_sets_factory_created_env_var(self, mock_run, mock_net, mock_health):
+        mock_run.return_value = MagicMock(stdout="", returncode=0)
+
+        before = int(time.time())
+        env = DockerEnvironment(task_id=42, repo="acme/webapp")
+        env.spin_up(service_port=3000)
+        after = int(time.time())
+
+        compose_call = mock_run.call_args_list[0]
+        call_env = compose_call[1].get("env") or compose_call[0][1] if len(compose_call[0]) > 1 else compose_call[1].get("env")
+        assert "FACTORY_CREATED" in call_env
+        created = int(call_env["FACTORY_CREATED"])
+        assert before <= created <= after
+
+    @patch("factory.docker_toolkit._wait_for_healthy")
+    @patch("factory.docker_toolkit._ensure_network")
+    @patch("factory.docker_toolkit.subprocess.run")
+    def test_spin_up_sets_factory_hostname_env_var(self, mock_run, mock_net, mock_health):
+        mock_run.return_value = MagicMock(stdout="", returncode=0)
+
+        env = DockerEnvironment(task_id=42, repo="acme/webapp")
+        env.spin_up(service_port=3000)
+
+        compose_call = mock_run.call_args_list[0]
+        call_env = compose_call[1].get("env") or compose_call[0][1] if len(compose_call[0]) > 1 else compose_call[1].get("env")
+        assert call_env["FACTORY_HOSTNAME"] == f"task-42.{PREVIEW_DOMAIN}"
+
+    @patch("factory.docker_toolkit._wait_for_healthy")
+    @patch("factory.docker_toolkit._ensure_network")
+    @patch("factory.docker_toolkit.subprocess.run")
     def test_spin_up_ensures_network(self, mock_run, mock_net, mock_health):
         mock_run.return_value = MagicMock(stdout="", returncode=0)
 
@@ -265,6 +299,333 @@ class TestSpinUp:
             if len(c[0]) > 0 and "network" in c[0][0] and "connect" in c[0][0]
         ]
         assert len(network_calls) == 2
+
+
+# ── _generate_compose_override ──────────────────────────────────────────
+
+
+class TestGenerateComposeOverride:
+    def test_generates_override_with_correct_labels(self, tmp_path):
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text("services:\n  app:\n    image: nginx\n")
+
+        env = DockerEnvironment(task_id=42, repo="acme/webapp")
+        override_path = env._generate_compose_override(str(compose), 3000)
+
+        assert override_path != ""
+        assert os.path.exists(override_path)
+
+        content = open(override_path).read()
+        assert "websecure" in content
+        assert ".tls:" in content
+        assert "factory-preview" in content
+        assert f"Host(`task-42.{PREVIEW_DOMAIN}`)" in content
+        assert "factory.task-id:" in content
+        assert '"42"' in content
+
+        # Clean up
+        os.unlink(override_path)
+
+    def test_override_targets_first_service(self, tmp_path):
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text(
+            "services:\n  web:\n    image: nginx\n  db:\n    image: postgres\n"
+        )
+
+        env = DockerEnvironment(task_id=1, repo="r")
+        override_path = env._generate_compose_override(str(compose), 8080)
+
+        assert override_path != ""
+        content = open(override_path).read()
+        # Should target 'web' (first service), not 'db'
+        assert "  web:" in content
+
+        os.unlink(override_path)
+
+    def test_override_includes_traefik_and_factory_labels(self, tmp_path):
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text("services:\n  app:\n    image: nginx\n")
+
+        env = DockerEnvironment(task_id=42, repo="acme/webapp", pr_number=15)
+        override_path = env._generate_compose_override(str(compose), 3000)
+
+        content = open(override_path).read()
+        # Traefik labels
+        assert "traefik.enable" in content
+        assert "websecure" in content
+        assert ".tls:" in content
+        assert "loadbalancer.server.port" in content
+        # Factory labels
+        assert "factory.task-id" in content
+        assert "factory.repo" in content
+        assert "factory.env-type" in content
+        assert "factory.created" in content
+        assert "factory.pr-number" in content
+
+        os.unlink(override_path)
+
+    def test_override_returns_empty_for_missing_file(self):
+        env = DockerEnvironment(task_id=1, repo="r")
+        result = env._generate_compose_override("/nonexistent/compose.yml", 3000)
+        assert result == ""
+
+    def test_override_returns_empty_for_invalid_yaml(self, tmp_path):
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text(": : : not valid yaml [[[")
+
+        env = DockerEnvironment(task_id=1, repo="r")
+        result = env._generate_compose_override(str(compose), 3000)
+        assert result == ""
+
+    def test_override_returns_empty_for_no_services(self, tmp_path):
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text("version: '3'\n")
+
+        env = DockerEnvironment(task_id=1, repo="r")
+        result = env._generate_compose_override(str(compose), 3000)
+        assert result == ""
+
+    def test_override_file_is_valid_yaml(self, tmp_path):
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text("services:\n  app:\n    image: nginx\n")
+
+        env = DockerEnvironment(task_id=42, repo="acme/webapp")
+        override_path = env._generate_compose_override(str(compose), 3000)
+
+        # Should be parseable as YAML
+        with open(override_path) as f:
+            data = yaml.safe_load(f)
+
+        assert "services" in data
+        assert "app" in data["services"]
+        assert "labels" in data["services"]["app"]
+        assert "networks" in data
+        assert "factory-preview" in data["networks"]
+
+        os.unlink(override_path)
+
+    def test_override_uses_correct_port(self, tmp_path):
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text("services:\n  app:\n    image: nginx\n")
+
+        env = DockerEnvironment(task_id=1, repo="r")
+        override_path = env._generate_compose_override(str(compose), 9999)
+
+        content = open(override_path).read()
+        assert '"9999"' in content
+
+        os.unlink(override_path)
+
+
+# ── spin_up with compose override ──────────────────────────────────────
+
+
+class TestSpinUpWithOverride:
+    @patch("factory.docker_toolkit._wait_for_healthy")
+    @patch("factory.docker_toolkit._ensure_network")
+    @patch("factory.docker_toolkit.subprocess.run")
+    def test_spin_up_uses_override_file(self, mock_run, mock_net, mock_health, tmp_path):
+        mock_run.return_value = MagicMock(stdout="", returncode=0)
+
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text("services:\n  app:\n    image: nginx\n")
+
+        env = DockerEnvironment(task_id=42, repo="acme/webapp")
+        url = env.spin_up(compose_file=str(compose), service_port=3000)
+
+        assert url == f"https://task-42.{PREVIEW_DOMAIN}"
+
+        # First subprocess call should be docker compose with TWO -f flags
+        compose_call = mock_run.call_args_list[0]
+        cmd = compose_call[0][0]
+
+        # Count -f flags — should be 2 (original + override)
+        f_indices = [i for i, x in enumerate(cmd) if x == "-f"]
+        assert len(f_indices) == 2, f"Expected 2 -f flags, got {len(f_indices)} in {cmd}"
+
+        # First -f should be the original compose file
+        assert cmd[f_indices[0] + 1] == str(compose)
+        # Second -f should be the override file
+        override_arg = cmd[f_indices[1] + 1]
+        assert ".factory-override-42" in override_arg
+
+    @patch("factory.docker_toolkit._wait_for_healthy")
+    @patch("factory.docker_toolkit._ensure_network")
+    @patch("factory.docker_toolkit.subprocess.run")
+    def test_spin_up_cleans_up_override_file(self, mock_run, mock_net, mock_health, tmp_path):
+        mock_run.return_value = MagicMock(stdout="", returncode=0)
+
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text("services:\n  app:\n    image: nginx\n")
+
+        env = DockerEnvironment(task_id=42, repo="acme/webapp")
+        env.spin_up(compose_file=str(compose), service_port=3000)
+
+        # Override file should be cleaned up after spin_up
+        override_path = tmp_path / ".factory-override-42.yml"
+        assert not override_path.exists(), "Override file should be cleaned up"
+
+    @patch("factory.docker_toolkit._wait_for_healthy")
+    @patch("factory.docker_toolkit._ensure_network")
+    @patch("factory.docker_toolkit.subprocess.run")
+    def test_spin_up_cleans_up_override_on_failure(self, mock_run, mock_net, mock_health, tmp_path):
+        mock_run.side_effect = subprocess.CalledProcessError(1, "docker compose")
+
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text("services:\n  app:\n    image: nginx\n")
+
+        env = DockerEnvironment(task_id=42, repo="acme/webapp")
+        with pytest.raises(subprocess.CalledProcessError):
+            env.spin_up(compose_file=str(compose), service_port=3000)
+
+        # Override file should be cleaned up even on failure
+        override_path = tmp_path / ".factory-override-42.yml"
+        assert not override_path.exists(), "Override file should be cleaned up on failure"
+
+    @patch("factory.docker_toolkit._wait_for_healthy")
+    @patch("factory.docker_toolkit._ensure_network")
+    @patch("factory.docker_toolkit.subprocess.run")
+    def test_spin_up_override_enforces_websecure(self, mock_run, mock_net, mock_health, tmp_path):
+        """Even if compose file uses 'web' entrypoint, override uses 'websecure'."""
+        mock_run.return_value = MagicMock(stdout="", returncode=0)
+
+        # Write a compose file with WRONG entrypoint
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text(
+            "services:\n"
+            "  app:\n"
+            "    image: nginx\n"
+            "    labels:\n"
+            '      - "traefik.enable=true"\n'
+            '      - "traefik.http.routers.app.entrypoints=web"\n'
+        )
+
+        env = DockerEnvironment(task_id=42, repo="acme/webapp")
+
+        # Capture what the override file contains before it's deleted
+        original_unlink = os.unlink
+        override_content = {}
+
+        def capture_and_unlink(path):
+            if ".factory-override" in str(path):
+                override_content["data"] = open(path).read()
+            original_unlink(path)
+
+        with patch("factory.docker_toolkit.os.unlink", side_effect=capture_and_unlink):
+            env.spin_up(compose_file=str(compose), service_port=3000)
+
+        # The override should enforce websecure, not web
+        assert "websecure" in override_content["data"]
+        assert "entrypoints=web" not in override_content["data"]
+
+
+# ── validate_compose_file ──────────────────────────────────────────────
+
+
+class TestValidateComposeFile:
+    def test_valid_compose_no_warnings(self, tmp_path):
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text(
+            "services:\n"
+            "  app:\n"
+            "    image: nginx\n"
+            "    labels:\n"
+            '      - "traefik.enable=true"\n'
+            '      - "traefik.http.routers.app.entrypoints=websecure"\n'
+            '      - "traefik.http.routers.app.tls=true"\n'
+            "    networks:\n"
+            "      - factory-preview\n"
+            "networks:\n"
+            "  factory-preview:\n"
+            "    external: true\n"
+        )
+        warnings = validate_compose_file(str(compose))
+        assert warnings == []
+
+    def test_detects_wrong_entrypoint(self, tmp_path):
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text(
+            "services:\n"
+            "  app:\n"
+            "    labels:\n"
+            '      - "traefik.http.routers.app.entrypoints=web"\n'
+            '      - "traefik.http.routers.app.tls=true"\n'
+            "    networks:\n"
+            "      - factory-preview\n"
+        )
+        warnings = validate_compose_file(str(compose))
+        assert any("entrypoints=web" in w for w in warnings)
+
+    def test_does_not_flag_websecure(self, tmp_path):
+        """entrypoints=websecure should NOT trigger the wrong-entrypoint warning."""
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text(
+            "services:\n"
+            "  app:\n"
+            "    labels:\n"
+            '      - "traefik.http.routers.app.entrypoints=websecure"\n'
+            '      - "traefik.http.routers.app.tls=true"\n'
+            "    networks:\n"
+            "      - factory-preview\n"
+        )
+        warnings = validate_compose_file(str(compose))
+        assert not any("entrypoints=web" in w for w in warnings)
+
+    def test_detects_missing_tls(self, tmp_path):
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text(
+            "services:\n"
+            "  app:\n"
+            "    labels:\n"
+            '      - "traefik.enable=true"\n'
+            '      - "traefik.http.routers.app.entrypoints=websecure"\n'
+            "    networks:\n"
+            "      - factory-preview\n"
+        )
+        warnings = validate_compose_file(str(compose))
+        assert any("tls" in w.lower() for w in warnings)
+
+    def test_detects_missing_factory_preview_network(self, tmp_path):
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text(
+            "services:\n"
+            "  app:\n"
+            "    image: nginx\n"
+        )
+        warnings = validate_compose_file(str(compose))
+        assert any("factory-preview" in w for w in warnings)
+
+    def test_file_not_found(self):
+        warnings = validate_compose_file("/nonexistent/file.yml")
+        assert len(warnings) == 1
+        assert "not found" in warnings[0]
+
+    def test_multiple_warnings(self, tmp_path):
+        """A compose with all issues should report multiple warnings."""
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text(
+            "services:\n"
+            "  app:\n"
+            "    labels:\n"
+            '      - "traefik.enable=true"\n'
+            '      - "traefik.http.routers.app.entrypoints=web"\n'
+        )
+        warnings = validate_compose_file(str(compose))
+        # Should have warnings for: wrong entrypoint, missing tls, missing network
+        assert len(warnings) == 3
+
+    def test_no_traefik_no_tls_warning(self, tmp_path):
+        """If traefik.enable is not present, don't warn about missing tls."""
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text(
+            "services:\n"
+            "  app:\n"
+            "    image: nginx\n"
+            "    networks:\n"
+            "      - factory-preview\n"
+        )
+        warnings = validate_compose_file(str(compose))
+        assert not any("tls" in w.lower() for w in warnings)
 
 
 # ── tear_down ───────────────────────────────────────────────────────────

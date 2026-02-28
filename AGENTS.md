@@ -83,6 +83,7 @@ Factory injects these environment variables into `docker compose up`:
 | `FACTORY_REPO` | Repository name | `acme/webapp` |
 | `FACTORY_HOSTNAME` | Public hostname for routing | `task-42.preview.factory.6a.fi` |
 | `FACTORY_SERVICE_PORT` | Port the service listens on | `3000` |
+| `FACTORY_CREATED` | Unix timestamp of creation | `1709145600` |
 
 ### Container Labels
 
@@ -95,6 +96,16 @@ Factory uses labels to identify and manage containers:
 | `factory.env-type` | `test` or `preview` |
 | `factory.created` | Unix timestamp of creation |
 | `factory.pr-number` | PR number (preview only) |
+
+### Automatic Label Enforcement
+
+Factory generates a compose override file at spin-up time that enforces the correct Traefik labels (`websecure` entrypoint + `tls=true`) and Factory metadata labels on the first service in your compose file. This means:
+
+- Even if your compose file uses the wrong entrypoint (e.g., `web` instead of `websecure`), Factory will override it
+- Even if your compose file is missing `tls=true`, Factory will add it
+- The `factory-preview` network is added automatically
+
+You should still include the correct labels in your compose file as best practice, but Factory will fix common mistakes automatically.
 
 ### Cleanup Behaviour
 

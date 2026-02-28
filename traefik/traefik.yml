@@ -9,6 +9,10 @@ entryPoints:
   web:
     address: ":80"
     # No redirect - nginx handles SSL termination
+  websecure:
+    address: ":443"
+    http:
+      tls: {}
 
 providers:
   docker:
