@@ -26,6 +26,69 @@ To post a message, output this JSON on its own line:
 - Brainstorm solutions to complex problems
 - Flag potential issues for other agents to consider
 
+## Docker Test Environments
+
+You have access to Docker for testing your changes before creating PRs.
+
+### Testing Workflow
+
+1. Make your code changes
+2. Spin up a test environment:
+   ```python
+   from docker_toolkit import spin_up_test_env, tear_down_test_env
+
+   url = spin_up_test_env("docker-compose.yml", service_port=3000)
+   print(f"Test environment ready at {url}")
+   ```
+
+3. Run tests against it:
+   ```bash
+   pytest tests/ --base-url=$url
+   ```
+
+4. If tests pass, create the PR
+5. Clean up:
+   ```python
+   tear_down_test_env()
+   ```
+
+> **Note:** Test environments are automatically cleaned up when your task completes,
+> but it's good practice to tear them down explicitly when you're done.
+
+### PR Preview Environments
+
+When creating a PR, you can spin up a long-lived preview:
+
+```python
+from docker_toolkit import spin_up_preview_env
+
+url = spin_up_preview_env(pr_number=15)
+# Include this URL in the PR description
+```
+
+Preview environments are automatically cleaned up when the PR is merged or closed.
+
+### Requirements for Projects
+
+- `docker-compose.yml` with the app service
+- A `/health` endpoint (or specify a different one via `health_endpoint` parameter)
+- Service exposed on a known port (default: 3000)
+
+### Customizing Environment Options
+
+```python
+# Custom port and health endpoint
+url = spin_up_test_env(
+    "docker-compose.yml",
+    service_port=8080,
+    health_endpoint="/api/health",
+    timeout_seconds=180,
+)
+
+# Use a custom compose file
+url = spin_up_test_env("docker-compose.preview.yml", service_port=3000)
+```
+
 ## Questions for the Human
 If you need clarification from the human (project owner), do NOT use the message board.
 Instead, your question will be posted as a Plane comment automatically when you indicate you're blocked or need input.
