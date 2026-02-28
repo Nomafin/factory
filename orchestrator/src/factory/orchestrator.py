@@ -996,13 +996,14 @@ This summary will be used as the PR description, so write it for a human reviewe
 
             # Find the first comment posted after we asked the question
             # Skip comments that look like our own system messages
+            system_markers = ["Agent needs clarification", "Progress (step", "Agent failed:", "Agent resumed"]
             response_text = None
             for comment in comments:
                 created = comment.get("created_at", "")
                 if created > asked_at:
                     html = comment.get("comment_html", "")
                     # Skip our own clarification/system comments
-                    if "Agent needs clarification" in html or "Progress (step" in html:
+                    if any(marker in html for marker in system_markers):
                         continue
                     # Strip HTML tags to get plain text
                     response_text = re.sub(r"<[^>]+>", "", html).strip()
