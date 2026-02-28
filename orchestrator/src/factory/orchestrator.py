@@ -617,9 +617,10 @@ class Orchestrator:
             parts.append("\nPlease continue with the task using the information above.")
 
         parts.append("""
-If you need clarification from the user before proceeding, output ONLY this JSON (no other text):
+If you need clarification from the user before proceeding, output ONLY this JSON and then STOP (exit immediately):
 {"type": "clarification_needed", "question": "Your question here"}
-This will pause the task and post your question for the user to answer.
+Do not output anything else — no explanation, no code, no thinking. Just the JSON line, then exit.
+This will pause the task and post your question as a Plane comment for the user to answer.
 
 When done, commit your changes with a descriptive message.
 
@@ -641,6 +642,12 @@ This summary will be used as the PR description, so write it for a human reviewe
 
             # Check for agent message board posts
             self._parse_agent_messages(task_id, content)
+
+            # Check for mid-stream clarification requests
+            question = self._extract_clarification(content)
+            if question:
+                loop.create_task(self._handle_clarification_and_stop(task_id, question))
+                return  # Don't buffer this output
 
             # Buffer output and post to Plane periodically
             self._output_counts[task_id] = self._output_counts.get(task_id, 0) + 1
@@ -742,6 +749,14 @@ This summary will be used as the PR description, so write it for a human reviewe
             f"Reply on Plane to continue."
         )
         logger.info("Task %d waiting for clarification: %s", task_id, question)
+
+    async def _handle_clarification_and_stop(self, task_id: int, question: str):
+        """Handle mid-stream clarification: stop the agent and pause for input."""
+        logger.info("Mid-stream clarification detected for task %d: %s", task_id, question)
+        # Stop the running agent gracefully
+        await self.runner.cancel_agent(task_id)
+        # Handle the clarification (update status, post to Plane, notify)
+        await self._handle_clarification(task_id, question)
 
     async def _handle_success(self, task_id: int, output: str):
         # Check if the agent is requesting clarification instead of completing
