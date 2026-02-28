@@ -110,10 +110,12 @@ MIGRATIONS = [
     "ALTER TABLE workflows ADD COLUMN max_iterations INTEGER DEFAULT 3;",
     "ALTER TABLE workflow_steps ADD COLUMN loop_to TEXT DEFAULT '';",
     "ALTER TABLE workflow_steps ADD COLUMN prompt_template TEXT DEFAULT '';",
+    "ALTER TABLE tasks ADD COLUMN preview_url TEXT DEFAULT '';",
 ]
 
 
 def _row_to_task(row: aiosqlite.Row) -> Task:
+    keys = row.keys()
     return Task(
         id=row["id"],
         title=row["title"],
@@ -124,10 +126,11 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
         plane_issue_id=row["plane_issue_id"],
         branch_name=row["branch_name"],
         pr_url=row["pr_url"],
+        preview_url=row["preview_url"] if "preview_url" in keys else "",
         error=row["error"],
         clarification_context=row["clarification_context"] or "",
-        workflow_id=row["workflow_id"] if "workflow_id" in row.keys() else None,
-        workflow_step=row["workflow_step"] if "workflow_step" in row.keys() else None,
+        workflow_id=row["workflow_id"] if "workflow_id" in keys else None,
+        workflow_step=row["workflow_step"] if "workflow_step" in keys else None,
         created_at=datetime.fromisoformat(row["created_at"]),
         started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
         completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,

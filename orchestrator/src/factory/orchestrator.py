@@ -8,7 +8,7 @@ from pathlib import Path
 
 from factory.config import Config
 from factory.db import Database
-from factory.docker_toolkit import cleanup_test_environments
+from factory.docker_toolkit import PREVIEW_DOMAIN, cleanup_test_environments
 from factory.memory import AgentMemory
 from factory.models import (
     HANDOFF_OUTPUT_TYPES, HandoffCreate, MessageCreate, MessageType,
@@ -62,6 +62,7 @@ class Orchestrator:
             )
         self._output_counts: dict[int, int] = {}
         self._output_buffers: dict[int, list[str]] = {}
+        self._notified_preview_urls: dict[int, set[str]] = {}
         self._polling_task: asyncio.Task | None = None
 
     async def recover_orphaned_tasks(self):
@@ -228,6 +229,64 @@ class Orchestrator:
         except (json.JSONDecodeError, ValueError):
             pass
         return False
+
+    # Regex to detect Factory preview/test environment URLs in agent output
+    _PREVIEW_URL_RE = re.compile(
+        r"https://(?:task-\d+|pr-\d+)\." + re.escape(PREVIEW_DOMAIN)
+    )
+
+    def _detect_preview_url(self, task_id: int, content: str):
+        """Check if agent output contains a preview environment URL.
+
+        When detected, stores the URL in the database and sends a Telegram
+        notification. Each URL is only notified once per task to avoid
+        duplicate messages.
+        """
+        match = self._PREVIEW_URL_RE.search(content)
+        if not match:
+            return
+        preview_url = match.group(0)
+
+        # Deduplicate: only notify once per URL per task
+        seen = self._notified_preview_urls.setdefault(task_id, set())
+        if preview_url in seen:
+            return
+        seen.add(preview_url)
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._handle_preview_deployed(task_id, preview_url))
+        except RuntimeError:
+            pass
+
+    async def _handle_preview_deployed(self, task_id: int, preview_url: str):
+        """Handle a successfully deployed preview environment.
+
+        Stores the preview URL in the database, sends a Telegram notification,
+        and posts a comment to the Plane issue.
+        """
+        task = await self.db.get_task(task_id)
+        if not task:
+            return
+
+        # Persist the preview URL
+        await self.db.update_task_fields(task_id, preview_url=preview_url)
+        await self.db.add_log(task_id, f"Preview environment deployed: {preview_url}")
+
+        logger.info(
+            "Preview environment deployed for task %d: %s", task_id, preview_url,
+        )
+
+        # Send Telegram notification
+        await self._notify(
+            f"\U0001f680 Preview deployed: {task.title}\nURL: {preview_url}"
+        )
+
+        # Post to Plane
+        await self._post_plane_comment(
+            task.plane_issue_id,
+            f'<p>\U0001f680 Preview deployed: <a href="{preview_url}">{preview_url}</a></p>',
+        )
 
     async def _update_plane_state(self, plane_issue_id: str, state_id: str, comment: str = ""):
         if not self.plane or not plane_issue_id or not state_id:
@@ -643,6 +702,9 @@ This summary will be used as the PR description, so write it for a human reviewe
             # Check for agent message board posts
             self._parse_agent_messages(task_id, content)
 
+            # Check for preview environment URLs
+            self._detect_preview_url(task_id, content)
+
             # Check for mid-stream clarification requests
             question = self._extract_clarification(content)
             if question:
@@ -672,6 +734,7 @@ This summary will be used as the PR description, so write it for a human reviewe
     def _on_agent_complete(self, task_id: int, returncode: int, output: str):
         self._output_counts.pop(task_id, None)
         self._output_buffers.pop(task_id, None)
+        self._notified_preview_urls.pop(task_id, None)
 
         # Best-effort cleanup of any Docker test containers spawned by this task.
         # Runs synchronously before async completion handlers to ensure containers
@@ -863,30 +926,40 @@ This summary will be used as the PR description, so write it for a human reviewe
 
         await self.db.update_task_status(task_id, TaskStatus.IN_REVIEW)
 
-        is_revision = bool(task.pr_url)
+        # Re-fetch to get preview_url that may have been set during the run
+        task = await self.db.get_task(task_id)
+        preview_url = task.preview_url if task else ""
+
+        is_revision = bool(task.pr_url) if task else False
         mode_label = "Revision completed" if is_revision else "Agent completed"
-        comment = f"{mode_label}. Branch: <code>{task.branch_name}</code>"
+        comment = f"{mode_label}. Branch: <code>{task.branch_name}</code>" if task else mode_label
         if pr_url:
             comment += f'<br/>PR: <a href="{pr_url}">{pr_url}</a>'
+        if preview_url:
+            comment += f'<br/>Preview: <a href="{preview_url}">{preview_url}</a>'
         await self._update_plane_state(
-            task.plane_issue_id, self.config.plane.states.in_review, comment
+            task.plane_issue_id if task else "", self.config.plane.states.in_review, comment
         )
 
-        notify_msg = f"\u2705 {mode_label}: {task.title}"
+        notify_msg = f"\u2705 {mode_label}: {task.title}" if task else f"\u2705 {mode_label}"
         if pr_url:
             notify_msg += f"\nPR: {pr_url}"
+        if preview_url:
+            notify_msg += f"\nPreview: {preview_url}"
         await self._notify(notify_msg)
 
         # Auto-post status message on task completion
-        completion_msg = f"{mode_label}: {task.title}"
+        completion_msg = f"{mode_label}: {task.title}" if task else mode_label
         if pr_url:
             completion_msg += f" (PR: {pr_url})"
+        if preview_url:
+            completion_msg += f" (Preview: {preview_url})"
         await self.post_message(
             sender="orchestrator",
             message=completion_msg,
             message_type=MessageType.STATUS,
             task_id=task_id,
-            workflow_id=task.workflow_id,
+            workflow_id=task.workflow_id if task else None,
         )
 
     async def _handle_failure(self, task_id: int, output: str):
