@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Factory Dashboard</title>
+<link rel="stylesheet" href="/static/dashboard/styles.css">
+</head>
+<body>
+<div class="app-layout">
+  <!-- Sidebar Overlay (mobile) -->
+  <div class="sidebar-overlay" id="sidebarOverlay" onclick="__closeSidebar()"></div>
+
+  <!-- Sidebar -->
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <span class="logo">&#x2699;</span>
+      <h1>Factory</h1>
+      <span class="version">v1.0</span>
+    </div>
+
+    <div class="sidebar-nav">
+      <div class="nav-section">
+        <div class="nav-section-label">Overview</div>
+        <a class="nav-item active" data-page="dashboard" href="#/dashboard" onclick="__closeSidebar()">
+          <span class="icon">&#x1F4CA;</span>
+          Dashboard
+        </a>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-section-label">Work</div>
+        <a class="nav-item" data-page="tasks" href="#/tasks" onclick="__closeSidebar()">
+          <span class="icon">&#x1F4CB;</span>
+          Tasks
+          <span class="badge" id="badgeTasks">-</span>
+        </a>
+        <a class="nav-item" data-page="agents" href="#/agents" onclick="__closeSidebar()">
+          <span class="icon">&#x1F916;</span>
+          Agents
+          <span class="badge" id="badgeAgents">-</span>
+        </a>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-section-label">Tools</div>
+        <a class="nav-item" data-page="preview" href="#/preview" onclick="__closeSidebar()">
+          <span class="icon">&#x1F310;</span>
+          Previews
+        </a>
+        <a class="nav-item" data-page="analytics" href="#/analytics" onclick="__closeSidebar()">
+          <span class="icon">&#x1F4C8;</span>
+          Analytics
+        </a>
+        <a class="nav-item" href="/messages" target="_blank">
+          <span class="icon">&#x1F4AC;</span>
+          Messages
+          <span style="font-size:10px;color:var(--text-muted)">&#x2197;</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="health-status">
+        <div class="health-dot" id="healthDot"></div>
+        <span id="healthText">Checking...</span>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main Content -->
+  <div class="main-content">
+    <header class="main-header">
+      <button class="menu-toggle" onclick="__toggleSidebar()">&#x2630;</button>
+      <span class="page-title" id="pageTitle">Dashboard</span>
+      <div class="header-actions">
+        <a href="/api/tasks" target="_blank" class="btn btn-sm btn-secondary">API</a>
+      </div>
+    </header>
+    <main class="main-body" id="pageContent">
+      <div class="loading"><div class="spinner"></div> Loading...</div>
+    </main>
+  </div>
+</div>
+
+<script src="/static/dashboard/app.js"></script>
+</body>
+</html>
