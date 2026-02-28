@@ -33,6 +33,7 @@ class Task(BaseModel):
     plane_issue_id: str = ""
     branch_name: str = ""
     pr_url: str = ""
+    preview_url: str = ""
     error: str = ""
     clarification_context: str = ""
     workflow_id: int | None = None
