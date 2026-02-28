@@ -89,6 +89,67 @@ url = spin_up_test_env(
 url = spin_up_test_env("docker-compose.preview.yml", service_port=3000)
 ```
 
+## Playwright E2E Testing
+
+You can run Playwright end-to-end tests against Docker test environments.
+
+### Quick Start
+
+```python
+from docker_toolkit import spin_up_test_env, tear_down_test_env
+from playwright_runner import run_playwright_tests
+
+# 1. Spin up a test environment
+url = spin_up_test_env("docker-compose.yml", service_port=3000)
+
+# 2. Run Playwright tests
+success, output = run_playwright_tests(base_url=url)
+
+if success:
+    print("All E2E tests passed!")
+else:
+    print(f"Tests failed:\n{output}")
+
+# 3. Tear down
+tear_down_test_env()
+```
+
+### Browser Options
+
+```python
+# Run with Firefox instead of Chromium
+success, output = run_playwright_tests(base_url=url, browser="firefox")
+
+# Run with a custom config file
+success, output = run_playwright_tests(
+    base_url=url,
+    config_file="playwright.config.ts",
+)
+
+# Run in headed mode (useful for debugging)
+success, output = run_playwright_tests(base_url=url, headless=False)
+```
+
+### Installing Browsers
+
+If Playwright browsers aren't installed yet:
+
+```python
+from playwright_runner import install_browsers
+
+# Install Chromium (recommended, smallest download)
+success, output = install_browsers("chromium")
+
+# Install all browsers
+success, output = install_browsers("")
+```
+
+### Configuration
+
+A Playwright config template is available at `prompts/templates/playwright.config.ts`.
+Copy it to your test directory and customize as needed. The config reads `BASE_URL`
+from the environment, which is set automatically by `run_playwright_tests()`.
+
 ## Questions for the Human
 If you need clarification from the human (project owner), do NOT use the message board.
 Instead, your question will be posted as a Plane comment automatically when you indicate you're blocked or need input.
