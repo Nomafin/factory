@@ -116,6 +116,103 @@ async def test_handle_success_detects_clarification(MockRunner, MockRepoMgr):
 
 @patch("factory.orchestrator.RepoManager")
 @patch("factory.orchestrator.AgentRunner")
+async def test_handle_success_skips_when_already_waiting_for_input(MockRunner, MockRepoMgr):
+    """Regression test: when mid-stream clarification was already handled by
+    _handle_clarification_and_stop, _handle_success must NOT post the same
+    clarification to Plane again (duplicate question bug)."""
+    db = Database(":memory:")
+    await db.initialize()
+
+    config = Config(
+        repos={"myapp": RepoConfig(url="git@github.com:user/myapp.git")},
+        agent_templates={"coder": AgentTemplateConfig(
+            allowed_tools=["Read", "Edit", "Bash"],
+        )},
+    )
+
+    mock_runner = MockRunner.return_value
+    mock_runner.cancel_agent = AsyncMock()
+
+    orch = Orchestrator(db=db, config=config)
+    orch.runner = mock_runner
+    mock_plane = MagicMock()
+    mock_plane.add_comment = AsyncMock()
+    mock_plane.update_issue_state = AsyncMock()
+    orch.plane = mock_plane
+    orch.notifier = None
+
+    task = await db.create_task(TaskCreate(
+        title="Fix bug", repo="myapp", agent_type="coder",
+        plane_issue_id="issue-123",
+    ))
+    await db.update_task_status(task.id, TaskStatus.IN_PROGRESS)
+
+    question = "Which database should I use?"
+    output = f'{{"type": "clarification_needed", "question": "{question}"}}'
+
+    # Simulate mid-stream clarification detection (path 1):
+    # _handle_clarification_and_stop calls _handle_clarification then cancels agent
+    await orch._handle_clarification(task.id, question)
+
+    # At this point the question has been posted to Plane once
+    assert mock_plane.add_comment.call_count == 1
+
+    # Simulate agent completion after cancel (path 2) — this must NOT post again
+    await orch._handle_success(task.id, output)
+
+    # Verify Plane comment was NOT posted a second time
+    assert mock_plane.add_comment.call_count == 1
+
+    # Task should still be waiting for input
+    updated = await db.get_task(task.id)
+    assert updated.status == TaskStatus.WAITING_FOR_INPUT
+
+    # Clarification context should have exactly one history entry, not two
+    context = json.loads(updated.clarification_context)
+    assert len(context["history"]) == 1
+    assert context["history"][0]["question"] == question
+
+    await db.close()
+
+
+@patch("factory.orchestrator.RepoManager")
+@patch("factory.orchestrator.AgentRunner")
+async def test_handle_success_still_detects_clarification_when_not_waiting(MockRunner, MockRepoMgr):
+    """Ensure _handle_success still handles clarification when it was NOT
+    already detected mid-stream (agent outputs it only at exit)."""
+    db = Database(":memory:")
+    await db.initialize()
+
+    config = Config(
+        repos={"myapp": RepoConfig(url="git@github.com:user/myapp.git")},
+        agent_templates={"coder": AgentTemplateConfig(
+            allowed_tools=["Read", "Edit", "Bash"],
+        )},
+    )
+
+    orch = Orchestrator(db=db, config=config)
+    orch.plane = None
+    orch.notifier = None
+
+    task = await db.create_task(TaskCreate(
+        title="Fix bug", repo="myapp", agent_type="coder",
+    ))
+    await db.update_task_status(task.id, TaskStatus.IN_PROGRESS)
+
+    # Clarification only in final output — no mid-stream detection
+    output = '{"type": "clarification_needed", "question": "What API version?"}'
+    await orch._handle_success(task.id, output)
+
+    updated = await db.get_task(task.id)
+    assert updated.status == TaskStatus.WAITING_FOR_INPUT
+    context = json.loads(updated.clarification_context)
+    assert context["pending_question"] == "What API version?"
+
+    await db.close()
+
+
+@patch("factory.orchestrator.RepoManager")
+@patch("factory.orchestrator.AgentRunner")
 async def test_resume_task(MockRunner, MockRepoMgr):
     db = Database(":memory:")
     await db.initialize()
