@@ -47,6 +47,38 @@ class RepoManager:
         await self._run("git", "worktree", "add", "-b", branch_name, str(wt_path), cwd=repo_path)
         return wt_path
 
+    async def checkout_existing_branch(self, repo_name: str, branch_name: str) -> Path:
+        """Create a worktree from an existing remote branch for revision work.
+
+        Fetches the latest changes and creates a worktree that tracks the
+        existing remote branch, so the agent can push updates to it.
+        """
+        repo_path = self.repos_dir / repo_name
+        slug = branch_name.replace("/", "-")
+        wt_path = self.worktrees_dir / slug
+
+        # Clean up any stale worktree at this path
+        if wt_path.exists():
+            try:
+                await self._run(
+                    "git", "worktree", "remove", str(wt_path), "--force",
+                    cwd=repo_path,
+                )
+            except RuntimeError:
+                pass
+            if wt_path.exists():
+                shutil.rmtree(wt_path)
+
+        # Fetch all remotes to get the latest branch state
+        await self._run("git", "fetch", "--all", cwd=repo_path)
+
+        # Create worktree tracking the existing remote branch
+        await self._run(
+            "git", "worktree", "add", str(wt_path), branch_name,
+            cwd=repo_path,
+        )
+        return wt_path
+
     async def remove_worktree(self, repo_name: str, wt_path: Path):
         repo_path = self.repos_dir / repo_name
         await self._run("git", "worktree", "remove", str(wt_path), "--force", cwd=repo_path)

@@ -235,6 +235,26 @@ class Database:
         row = await cursor.fetchone()
         return _row_to_task(row) if row else None
 
+    async def find_previous_task_with_pr(self, plane_issue_id: str) -> Task | None:
+        """Find a previous task for the same Plane issue that has a PR.
+
+        Used to detect revision tasks: if a previous task for this issue
+        already created a PR, the new task is a revision that should push
+        to the existing branch instead of creating a new one.
+        """
+        if not plane_issue_id:
+            return None
+        cursor = await self._db.execute(
+            """SELECT * FROM tasks
+               WHERE plane_issue_id = ?
+                 AND pr_url != ''
+                 AND status IN ('in_review', 'done', 'failed')
+               ORDER BY created_at DESC LIMIT 1""",
+            (plane_issue_id,),
+        )
+        row = await cursor.fetchone()
+        return _row_to_task(row) if row else None
+
     async def list_tasks(self, status: TaskStatus | None = None) -> list[Task]:
         if status:
             cursor = await self._db.execute(
