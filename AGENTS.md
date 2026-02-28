@@ -116,6 +116,67 @@ You should still include the correct labels in your compose file as best practic
 
 See `prompts/templates/docker-compose.preview.yml` for a complete reference implementation.
 
+## Clarification System
+
+Agents can pause mid-task to ask the user a question. This is useful when the task description is ambiguous or the agent needs user input before proceeding.
+
+### How It Works
+
+1. Agent outputs a special JSON line to stdout
+2. Factory detects the clarification request
+3. Task is paused and status changes to `waiting_for_input`
+4. Question is posted as a comment on the Plane issue
+5. User replies to the Plane comment
+6. Factory detects the reply and resumes the agent with the answer
+
+### Agent API
+
+To request clarification, output this JSON (and nothing else) then exit:
+
+```json
+{"type": "clarification_needed", "question": "What color scheme would you like for the UI?"}
+```
+
+**Important:** After outputting the JSON, the agent should stop immediately. Do not continue working.
+
+### Example Flow
+
+```
+Agent: Building the dashboard...
+Agent: {"type": "clarification_needed", "question": "Should the dashboard use dark or light mode by default?"}
+[Agent exits, task paused]
+
+[User replies on Plane: "Dark mode please"]
+
+[Agent resumes with context]
+Agent: User requested dark mode. Implementing...
+```
+
+### Clarification Context
+
+When resumed, the agent receives the clarification history in its prompt:
+
+```
+## Previous clarifications
+Q: Should the dashboard use dark or light mode by default?
+A: Dark mode please
+
+Please continue with the task using the information above.
+```
+
+### Multi-Round Clarifications
+
+Agents can ask multiple clarification questions during a task. Each exchange is preserved in the history.
+
+### Telegram Notifications
+
+When an agent requests clarification, a notification is sent to Telegram:
+```
+❓ Agent needs input: Build dashboard
+Question: Should the dashboard use dark or light mode?
+Reply on Plane to continue.
+```
+
 ## Inter-Agent Communication
 
 Agents communicate via the message board. Messages are JSON objects written to stdout:

@@ -7,12 +7,14 @@ AI agent orchestrator that manages autonomous Claude-powered agents to execute t
 - **Task queue** with concurrent agent execution (configurable limit)
 - **Multi-agent workflows** with conditional steps, loops, and automatic iteration
 - **Coder-reviewer collaboration** — automatic code review cycles with revision loops
+- **Agent clarification system** — agents can pause to ask users questions mid-task
 - **Agent message board** — real-time inter-agent communication with web UI
 - **Agent handoffs** — context passing between agents in workflows
 - **Five agent types**: coder, reviewer, researcher, devops, and coder_revision
 - **Timeout enforcement** — watchdog kills stuck agents (total + idle timeouts)
 - **Plane integration** — webhook-driven task creation and status updates
 - **Docker test/preview environments** for pre-PR testing with automatic cleanup
+- **Preview URL notifications** — Telegram alerts when preview environments are deployed
 - **Isolated workspaces** via git worktrees
 - **Agent memory** via SurrealDB with vector search
 - **Telegram notifications** for task events
@@ -108,7 +110,10 @@ tear_down_test_env()
 - Test environments are ephemeral and cleaned up automatically on task completion
 - Preview environments persist until the associated PR is merged/closed
 - All environments get public URLs via Traefik (e.g., `https://task-42.preview.factory.6a.fi`)
+- Preview URL is automatically sent to Telegram when environment is ready
 - A reference `docker-compose.yml` template is at `prompts/templates/docker-compose.preview.yml`
+
+**Infrastructure Setup:** To set up Traefik, nginx, SSL certificates, and cleanup automation on your server, see [docs/infrastructure-setup.md](docs/infrastructure-setup.md).
 
 ## Prerequisites
 
