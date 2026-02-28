@@ -1,0 +1,55 @@
+# Factory Docker Compose Preview Template
+#
+# Reference implementation for projects that want to use Factory's
+# Docker test/preview environments.
+#
+# Environment variables injected by Factory (do not set manually):
+#   FACTORY_TASK_ID      — The task ID (e.g., "42")
+#   FACTORY_REPO         — The repository name (e.g., "acme/webapp")
+#   FACTORY_HOSTNAME     — The public hostname (e.g., "task-42.preview.factory.6a.fi")
+#   FACTORY_SERVICE_PORT — The service port passed to spin_up()
+#
+# Usage:
+#   # As a test environment (ephemeral)
+#   from docker_toolkit import spin_up_test_env
+#   url = spin_up_test_env("docker-compose.preview.yml", service_port=3000)
+#
+#   # As a PR preview (long-lived)
+#   from docker_toolkit import spin_up_preview_env
+#   url = spin_up_preview_env(pr_number=15, compose_file="docker-compose.preview.yml")
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${FACTORY_SERVICE_PORT:-3000}"
+    labels:
+      # Factory labels (required for cleanup and identification)
+      - "factory.task-id=${FACTORY_TASK_ID}"
+      - "factory.repo=${FACTORY_REPO}"
+      - "factory.env-type=test"
+      - "factory.created=${FACTORY_CREATED:-0}"
+      # Traefik labels (required for public URL routing)
+      - "traefik.enable=true"
+      - "traefik.http.routers.app-${FACTORY_TASK_ID:-0}.rule=Host(\`${FACTORY_HOSTNAME:-localhost}\`)"
+      - "traefik.http.routers.app-${FACTORY_TASK_ID:-0}.entrypoints=websecure"
+      - "traefik.http.routers.app-${FACTORY_TASK_ID:-0}.tls=true"
+      - "traefik.http.services.app-${FACTORY_TASK_ID:-0}.loadbalancer.server.port=${FACTORY_SERVICE_PORT:-3000}"
+    environment:
+      - NODE_ENV=production
+      - PORT=${FACTORY_SERVICE_PORT:-3000}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${FACTORY_SERVICE_PORT:-3000}/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - default
+      - factory-preview
+
+networks:
+  factory-preview:
+    external: true

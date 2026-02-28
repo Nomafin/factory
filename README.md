@@ -12,6 +12,7 @@ AI agent orchestrator that manages autonomous Claude-powered agents to execute t
 - **Five agent types**: coder, reviewer, researcher, devops, and coder_revision
 - **Timeout enforcement** — watchdog kills stuck agents (total + idle timeouts)
 - **Plane integration** — webhook-driven task creation and status updates
+- **Docker test/preview environments** for pre-PR testing with automatic cleanup
 - **Isolated workspaces** via git worktrees
 - **Agent memory** via SurrealDB with vector search
 - **Telegram notifications** for task events
@@ -60,12 +61,15 @@ uvicorn factory.main:app --host 0.0.0.0 --port 8100
 factory/
 ├── config.yml                 # Main configuration
 ├── .env.example               # Environment variable template
+├── AGENTS.md                  # Agent guide (Docker envs, communication)
 ├── prompts/                   # Agent system prompts
 │   ├── coder.md              # Feature implementation
 │   ├── coder_revision.md     # Code revision after review
 │   ├── reviewer.md           # Code review
 │   ├── researcher.md         # Research tasks
-│   └── devops.md             # Infrastructure tasks
+│   ├── devops.md             # Infrastructure tasks
+│   └── templates/            # Reference templates
+│       └── docker-compose.preview.yml
 ├── orchestrator/
 │   ├── src/factory/
 │   │   ├── main.py           # FastAPI app + static files
@@ -86,13 +90,33 @@ factory/
     └── plans/                # Design documents
 ```
 
+## Docker Test Environments
+
+Agents can spin up Docker environments to test changes before creating PRs. See [AGENTS.md](AGENTS.md) for the full guide.
+
+**Quick overview:**
+
+```python
+# In agent code — spin up a test environment
+from docker_toolkit import spin_up_test_env, tear_down_test_env
+
+url = spin_up_test_env("docker-compose.yml", service_port=3000)
+# Run tests against the URL, then clean up
+tear_down_test_env()
+```
+
+- Test environments are ephemeral and cleaned up automatically on task completion
+- Preview environments persist until the associated PR is merged/closed
+- All environments get public URLs via Traefik (e.g., `https://task-42.preview.factory.6a.fi`)
+- A reference `docker-compose.yml` template is at `prompts/templates/docker-compose.preview.yml`
+
 ## Prerequisites
 
 - Python 3.12+
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and on PATH
 - GitHub personal access token
 - Anthropic API key
-- Docker (optional, for SurrealDB agent memory)
+- Docker (required for test/preview environments and optional SurrealDB agent memory)
 
 ## Installation
 
