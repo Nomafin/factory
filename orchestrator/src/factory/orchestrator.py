@@ -17,6 +17,7 @@ from factory.models import (
 from factory.notifier import TelegramNotifier
 from factory.plane import PlaneClient
 from factory.prompts import load_prompt
+from factory.revision_context import RevisionContext, build_revision_context
 from factory.runner import AgentRunner
 from factory.workspace import RepoManager
 
@@ -118,6 +119,16 @@ class Orchestrator:
             cwd=wt_path,
         )
         return pr_url
+
+    async def _push_to_existing_branch(self, wt_path: Path, branch_name: str):
+        """Push updates to an existing branch (for revision tasks)."""
+        token = os.environ.get("GITHUB_TOKEN", "")
+        remote_url = await self._run("git", "remote", "get-url", "origin", cwd=wt_path)
+        if token and "github.com" in remote_url and "x-access-token" not in remote_url:
+            auth_url = remote_url.replace("https://github.com/", f"https://x-access-token:{token}@github.com/")
+            await self._run("git", "remote", "set-url", "origin", auth_url, cwd=wt_path)
+
+        await self._run("git", "push", "origin", branch_name, cwd=wt_path)
 
     async def _notify(self, message: str):
         if self.notifier:
@@ -238,6 +249,45 @@ class Orchestrator:
         except Exception as e:
             logger.warning("Failed to post comment to Plane issue %s: %s", plane_issue_id, e)
 
+    async def _detect_revision_task(self, task) -> tuple[bool, str, str]:
+        """Check if a task is a revision of a previous task that already has a PR.
+
+        Returns:
+            Tuple of (is_revision, existing_branch_name, existing_pr_url).
+        """
+        if not task.plane_issue_id:
+            return False, "", ""
+
+        try:
+            previous = await self.db.find_previous_task_with_pr(task.plane_issue_id)
+            if previous and previous.pr_url and previous.branch_name:
+                logger.info(
+                    "Task %d is a revision of task %d (PR: %s, branch: %s)",
+                    task.id, previous.id, previous.pr_url, previous.branch_name,
+                )
+                return True, previous.branch_name, previous.pr_url
+        except Exception as e:
+            logger.warning("Revision detection failed for task %d: %s", task.id, e)
+
+        return False, "", ""
+
+    async def _fetch_revision_context(
+        self, pr_url: str, branch_name: str, plane_issue_id: str, repo_dir: str | None = None,
+    ) -> RevisionContext:
+        """Fetch review feedback for a revision task."""
+        try:
+            return await build_revision_context(
+                pr_url=pr_url,
+                branch_name=branch_name,
+                plane_client=self.plane,
+                plane_project_id=self.config.plane.project_id,
+                plane_issue_id=plane_issue_id,
+                repo_dir=repo_dir,
+            )
+        except Exception as e:
+            logger.warning("Failed to build revision context: %s", e)
+            return RevisionContext(pr_url=pr_url, branch_name=branch_name)
+
     async def process_task(self, task_id: int) -> bool:
         if not self.runner.can_accept_task:
             logger.warning("Cannot accept task %d: no available slots", task_id)
@@ -267,11 +317,28 @@ class Orchestrator:
             )
             return False
 
+        # Detect if this is a revision of a previous task with an existing PR
+        is_revision, existing_branch, existing_pr_url = await self._detect_revision_task(task)
+
         try:
             await self.repo_manager.ensure_repo(task.repo, repo_config.url)
-            branch_name = f"agent/task-{task.id}-{_slugify(task.title)}"
-            wt_path = await self.repo_manager.create_worktree(task.repo, branch_name)
-            await self.db.update_task_fields(task_id, branch_name=branch_name)
+
+            if is_revision and existing_branch:
+                # Revision task: check out the existing branch
+                branch_name = existing_branch
+                wt_path = await self.repo_manager.checkout_existing_branch(task.repo, branch_name)
+                await self.db.update_task_fields(
+                    task_id, branch_name=branch_name, pr_url=existing_pr_url,
+                )
+                logger.info(
+                    "Task %d: revision mode, checked out existing branch %s",
+                    task_id, branch_name,
+                )
+            else:
+                # Fresh task: create a new branch
+                branch_name = f"agent/task-{task.id}-{_slugify(task.title)}"
+                wt_path = await self.repo_manager.create_worktree(task.repo, branch_name)
+                await self.db.update_task_fields(task_id, branch_name=branch_name)
         except Exception as e:
             logger.exception("Failed to set up workspace for task %d", task_id)
             await self.db.update_task_status(task_id, TaskStatus.FAILED, error=str(e))
@@ -300,24 +367,45 @@ class Orchestrator:
         except Exception as e:
             logger.warning("Handoff context fetch failed for task %d: %s", task_id, e)
 
+        # Fetch revision context (PR comments, task comments) if this is a revision
+        revision_context = ""
+        if is_revision:
+            repo_path = self.repo_manager.repos_dir / task.repo
+            rev_ctx = await self._fetch_revision_context(
+                pr_url=existing_pr_url,
+                branch_name=existing_branch,
+                plane_issue_id=task.plane_issue_id,
+                repo_dir=str(repo_path),
+            )
+            revision_context = rev_ctx.format_prompt_section()
+
         try:
             prompt = self._build_prompt(
                 task.title, task.description,
                 memories=memories, handoff_context=handoff_context,
+                revision_context=revision_context,
             )
-            system_prompt = load_prompt(template.system_prompt_file, self.base_dir)
+
+            # Use coder_revision prompt if available and this is a revision
+            system_prompt_file = template.system_prompt_file
+            if is_revision:
+                revision_template = self.config.agent_templates.get("coder_revision")
+                if revision_template and revision_template.system_prompt_file:
+                    system_prompt_file = revision_template.system_prompt_file
+            system_prompt = load_prompt(system_prompt_file, self.base_dir)
 
             await self.db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+            mode_label = "revision" if is_revision else "fresh"
             await self._update_plane_state(
                 task.plane_issue_id, self.config.plane.states.in_progress,
-                f"Agent started on branch <code>{branch_name}</code>"
+                f"Agent started ({mode_label}) on branch <code>{branch_name}</code>"
             )
-            await self._notify(f"\U0001f527 Agent started: {task.title}\nBranch: {branch_name}")
+            await self._notify(f"\U0001f527 Agent started ({mode_label}): {task.title}\nBranch: {branch_name}")
 
             # Auto-post status message on task start
             await self.post_message(
                 sender=f"orchestrator",
-                message=f"Task started: {task.title} (agent: {task.agent_type}, branch: {branch_name})",
+                message=f"Task started ({mode_label}): {task.title} (agent: {task.agent_type}, branch: {branch_name})",
                 message_type=MessageType.STATUS,
                 task_id=task_id,
                 workflow_id=task.workflow_id,
@@ -499,6 +587,7 @@ class Orchestrator:
         memories: list[dict] | None = None,
         clarification_history: list[dict] | None = None,
         handoff_context: str = "",
+        revision_context: str = "",
     ) -> str:
         parts = [f"Task: {title}"]
         if description:
@@ -515,6 +604,9 @@ class Orchestrator:
 
         if handoff_context:
             parts.append(handoff_context)
+
+        if revision_context:
+            parts.append(revision_context)
 
         if clarification_history:
             lines = ["\n## Previous clarifications"]
@@ -688,33 +780,47 @@ This summary will be used as the PR description, so write it for a human reviewe
             await self._advance_workflow(task.workflow_id, task.workflow_step, output)
             return
 
-        # Standalone task: push branch and create PR
-        pr_url = ""
+        # Standalone task: push branch and create PR (or push to existing PR)
+        pr_url = task.pr_url  # May already be set for revision tasks
         wt_path = FACTORY_ROOT / "worktrees" / task.branch_name.replace("/", "-")
-        try:
-            pr_url = await self._push_and_create_pr(task_id, wt_path, task.branch_name, task.title, summary=output)
-            await self.db.update_task_fields(task_id, pr_url=pr_url)
-            logger.info("Created PR for task %d: %s", task_id, pr_url)
-        except Exception as e:
-            logger.warning("Failed to create PR for task %d: %s", task_id, e)
-            await self.db.add_log(task_id, f"PR creation failed: {e}")
+
+        if pr_url:
+            # Revision task: push to existing branch (PR already exists)
+            try:
+                await self._push_to_existing_branch(wt_path, task.branch_name)
+                logger.info("Pushed revision for task %d to existing PR: %s", task_id, pr_url)
+                await self.db.add_log(task_id, f"Pushed revision to existing PR: {pr_url}")
+            except Exception as e:
+                logger.warning("Failed to push revision for task %d: %s", task_id, e)
+                await self.db.add_log(task_id, f"Push to existing branch failed: {e}")
+        else:
+            # Fresh task: create a new PR
+            try:
+                pr_url = await self._push_and_create_pr(task_id, wt_path, task.branch_name, task.title, summary=output)
+                await self.db.update_task_fields(task_id, pr_url=pr_url)
+                logger.info("Created PR for task %d: %s", task_id, pr_url)
+            except Exception as e:
+                logger.warning("Failed to create PR for task %d: %s", task_id, e)
+                await self.db.add_log(task_id, f"PR creation failed: {e}")
 
         await self.db.update_task_status(task_id, TaskStatus.IN_REVIEW)
 
-        comment = f"Agent completed. Branch: <code>{task.branch_name}</code>"
+        is_revision = bool(task.pr_url)
+        mode_label = "Revision completed" if is_revision else "Agent completed"
+        comment = f"{mode_label}. Branch: <code>{task.branch_name}</code>"
         if pr_url:
             comment += f'<br/>PR: <a href="{pr_url}">{pr_url}</a>'
         await self._update_plane_state(
             task.plane_issue_id, self.config.plane.states.in_review, comment
         )
 
-        notify_msg = f"\u2705 Agent completed: {task.title}"
+        notify_msg = f"\u2705 {mode_label}: {task.title}"
         if pr_url:
             notify_msg += f"\nPR: {pr_url}"
         await self._notify(notify_msg)
 
         # Auto-post status message on task completion
-        completion_msg = f"Task completed: {task.title}"
+        completion_msg = f"{mode_label}: {task.title}"
         if pr_url:
             completion_msg += f" (PR: {pr_url})"
         await self.post_message(

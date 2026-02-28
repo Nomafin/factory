@@ -419,6 +419,11 @@ async def plane_webhook(request: Request, db: Database = Depends(get_db), orch: 
         existing = await db.find_by_plane_issue_id(event.issue_id) if event.issue_id else None
         if existing and existing.status in (TaskStatus.QUEUED, TaskStatus.IN_PROGRESS):
             return {"status": "already_exists", "task_id": existing.id}
+
+        # Check if a previous task for this issue has a PR (revision detection)
+        previous_with_pr = await db.find_previous_task_with_pr(event.issue_id) if event.issue_id else None
+        is_revision = previous_with_pr is not None
+
         repo = event.repo or orch.config.plane.default_repo
         task = await db.create_task(TaskCreate(
             title=event.issue_title,
@@ -428,7 +433,8 @@ async def plane_webhook(request: Request, db: Database = Depends(get_db), orch: 
             plane_issue_id=event.issue_id,
         ))
         await orch.process_task(task.id)
-        return {"status": "task_created", "task_id": task.id}
+        status = "revision_task_created" if is_revision else "task_created"
+        return {"status": status, "task_id": task.id}
 
     if event.state_name == "Cancelled":
         tasks = await db.list_tasks(status=TaskStatus.IN_PROGRESS)
