@@ -761,6 +761,18 @@ This summary will be used as the PR description, so write it for a human reviewe
         await self.runner.cancel_agent(task_id)
 
     async def _handle_success(self, task_id: int, output: str):
+        # Check if task is already waiting for input (mid-stream clarification
+        # was already handled by _handle_clarification_and_stop via _on_agent_output).
+        # Without this guard, the same clarification would be posted to Plane twice:
+        # once mid-stream and once here when the cancelled agent completes.
+        task = await self.db.get_task(task_id)
+        if task and task.status == TaskStatus.WAITING_FOR_INPUT:
+            logger.info(
+                "Skipping success handling for task %d (already waiting for input)",
+                task_id,
+            )
+            return
+
         # Check if the agent is requesting clarification instead of completing
         question = self._extract_clarification(output)
         if question:
@@ -770,6 +782,8 @@ This summary will be used as the PR description, so write it for a human reviewe
 
         await self.db.add_log(task_id, f"Agent completed successfully:\n{output[:2000]}")
 
+        # Re-fetch task in case it was modified (task was fetched above for the
+        # WAITING_FOR_INPUT guard, but may be stale after the log write).
         task = await self.db.get_task(task_id)
         if not task:
             return
