@@ -753,10 +753,12 @@ This summary will be used as the PR description, so write it for a human reviewe
     async def _handle_clarification_and_stop(self, task_id: int, question: str):
         """Handle mid-stream clarification: stop the agent and pause for input."""
         logger.info("Mid-stream clarification detected for task %d: %s", task_id, question)
-        # Stop the running agent gracefully
-        await self.runner.cancel_agent(task_id)
-        # Handle the clarification (update status, post to Plane, notify)
+        # Set status to waiting FIRST so _on_agent_complete skips failure handling
+        await self.db.update_task_status(task_id, TaskStatus.WAITING_FOR_INPUT)
+        # Handle the clarification (post to Plane, notify, update context)
         await self._handle_clarification(task_id, question)
+        # Now stop the agent (completion handler will see waiting_for_input status)
+        await self.runner.cancel_agent(task_id)
 
     async def _handle_success(self, task_id: int, output: str):
         # Check if the agent is requesting clarification instead of completing
@@ -847,6 +849,11 @@ This summary will be used as the PR description, so write it for a human reviewe
         )
 
     async def _handle_failure(self, task_id: int, output: str):
+        # Check if task is already waiting for input (mid-stream clarification)
+        task = await self.db.get_task(task_id)
+        if task and task.status == TaskStatus.WAITING_FOR_INPUT:
+            logger.info("Skipping failure handling for task %d (waiting for input)", task_id)
+            return
         await self.db.update_task_status(task_id, TaskStatus.FAILED, error=output[:2000])
         task = await self.db.get_task(task_id)
         if task:
