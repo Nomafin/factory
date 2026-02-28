@@ -1,0 +1,31 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${FACTORY_SERVICE_PORT:-3000}"
+    labels:
+      - "factory.task-id=${FACTORY_TASK_ID:-51}"
+      - "factory.repo=${FACTORY_REPO:-factory}"
+      - "factory.env-type=test"
+      - "factory.created=${FACTORY_CREATED:-0}"
+      - "traefik.enable=true"
+      - "traefik.http.routers.task-51.rule=Host(`task-51.preview.factory.6a.fi`)"
+      - "traefik.http.routers.task-51.entrypoints=web"
+      - "traefik.http.services.task-51.loadbalancer.server.port=3000"
+    environment:
+      - PORT=${FACTORY_SERVICE_PORT:-3000}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${FACTORY_SERVICE_PORT:-3000}/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - default
+      - factory-preview
+
+networks:
+  factory-preview:
+    external: true
