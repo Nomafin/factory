@@ -1587,7 +1587,20 @@ This summary will be used as the PR description, so write it for a human reviewe
 
 
 def _slugify(text: str) -> str:
-    return "-".join(text.lower().split()[:5]).replace("/", "-")[:40]
+    """Convert text to a git-safe branch name slug.
+    
+    Git branch names cannot contain: space, ~, ^, :, ?, *, [, \\, or ..
+    """
+    import re
+    # Remove or replace invalid git branch characters
+    slug = text.lower()
+    slug = re.sub(r'[~^:?*\[\]\\]', '', slug)  # Remove invalid chars
+    slug = re.sub(r'\.\.+', '.', slug)  # Collapse multiple dots
+    slug = "-".join(slug.split()[:5])  # Take first 5 words
+    slug = slug.replace("/", "-")
+    slug = re.sub(r'-+', '-', slug)  # Collapse multiple dashes
+    slug = slug.strip('-.')  # Remove leading/trailing dashes and dots
+    return slug[:40]
 
 
 def parse_review_output(output: str) -> ReviewResult | None:
