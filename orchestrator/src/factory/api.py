@@ -398,6 +398,144 @@ async def message_stream(request: Request):
     )
 
 
+@router.get("/analytics")
+async def get_analytics(db: Database = Depends(get_db)):
+    """Return pre-aggregated analytics data for the dashboard.
+
+    Computes task success/failure rates, agent performance stats,
+    time-to-completion metrics, and daily trend data.
+    """
+    tasks = await db.list_tasks()
+    workflows = await db.list_workflows()
+
+    total = len(tasks)
+    done = sum(1 for t in tasks if t.status == TaskStatus.DONE)
+    failed = sum(1 for t in tasks if t.status == TaskStatus.FAILED)
+    cancelled = sum(1 for t in tasks if t.status == TaskStatus.CANCELLED)
+    in_progress = sum(1 for t in tasks if t.status == TaskStatus.IN_PROGRESS)
+    queued = sum(1 for t in tasks if t.status == TaskStatus.QUEUED)
+    waiting = sum(1 for t in tasks if t.status == TaskStatus.WAITING_FOR_INPUT)
+    in_review = sum(1 for t in tasks if t.status == TaskStatus.IN_REVIEW)
+
+    # Status breakdown
+    status_breakdown = {
+        "done": done,
+        "failed": failed,
+        "cancelled": cancelled,
+        "in_progress": in_progress,
+        "queued": queued,
+        "waiting_for_input": waiting,
+        "in_review": in_review,
+    }
+
+    # Success / failure rates
+    completed_total = done + failed
+    success_rate = round((done / total) * 100, 1) if total > 0 else 0
+    failure_rate = round((failed / total) * 100, 1) if total > 0 else 0
+
+    # Duration metrics (for completed tasks with both timestamps)
+    durations_ms = []
+    for t in tasks:
+        if t.status == TaskStatus.DONE and t.started_at and t.completed_at:
+            d = (t.completed_at - t.started_at).total_seconds() * 1000
+            if d >= 0:
+                durations_ms.append(d)
+
+    duration_minutes = [d / 60000 for d in durations_ms]
+    avg_duration = round(sum(duration_minutes) / len(duration_minutes), 1) if duration_minutes else 0
+    min_duration = round(min(duration_minutes), 1) if duration_minutes else 0
+    max_duration = round(max(duration_minutes), 1) if duration_minutes else 0
+    sorted_durations = sorted(duration_minutes)
+    median_duration = 0
+    if sorted_durations:
+        mid = len(sorted_durations) // 2
+        if len(sorted_durations) % 2 == 0:
+            median_duration = round((sorted_durations[mid - 1] + sorted_durations[mid]) / 2, 1)
+        else:
+            median_duration = round(sorted_durations[mid], 1)
+
+    # Agent type performance
+    agent_stats = {}
+    for t in tasks:
+        agent = t.agent_type or "default"
+        if agent not in agent_stats:
+            agent_stats[agent] = {"total": 0, "done": 0, "failed": 0, "avg_duration": 0, "durations": []}
+        agent_stats[agent]["total"] += 1
+        if t.status == TaskStatus.DONE:
+            agent_stats[agent]["done"] += 1
+            if t.started_at and t.completed_at:
+                d = (t.completed_at - t.started_at).total_seconds() / 60
+                agent_stats[agent]["durations"].append(d)
+        elif t.status == TaskStatus.FAILED:
+            agent_stats[agent]["failed"] += 1
+
+    agent_performance = []
+    for agent_type, stats in agent_stats.items():
+        durations_list = stats.pop("durations")
+        stats["avg_duration"] = round(sum(durations_list) / len(durations_list), 1) if durations_list else 0
+        stats["success_rate"] = round((stats["done"] / stats["total"]) * 100, 1) if stats["total"] > 0 else 0
+        agent_performance.append({"agent_type": agent_type, **stats})
+
+    # Daily trends (last 30 days)
+    from datetime import timedelta
+    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    daily_data = {}
+    for i in range(30):
+        day = (now - timedelta(days=29 - i)).strftime("%Y-%m-%d")
+        daily_data[day] = {"date": day, "created": 0, "completed": 0, "failed": 0}
+
+    for t in tasks:
+        day = t.created_at.strftime("%Y-%m-%d")
+        if day in daily_data:
+            daily_data[day]["created"] += 1
+        if t.status == TaskStatus.DONE and t.completed_at:
+            day = t.completed_at.strftime("%Y-%m-%d")
+            if day in daily_data:
+                daily_data[day]["completed"] += 1
+        if t.status == TaskStatus.FAILED and t.completed_at:
+            day = t.completed_at.strftime("%Y-%m-%d")
+            if day in daily_data:
+                daily_data[day]["failed"] += 1
+
+    daily_trends = list(daily_data.values())
+
+    # Workflow metrics
+    wf_total = len(workflows)
+    wf_completed = sum(1 for w in workflows if w.status == WorkflowStatus.COMPLETED)
+    wf_failed = sum(1 for w in workflows if w.status == WorkflowStatus.FAILED)
+    wf_running = sum(1 for w in workflows if w.status == WorkflowStatus.RUNNING)
+
+    return {
+        "summary": {
+            "total_tasks": total,
+            "success_rate": success_rate,
+            "failure_rate": failure_rate,
+            "done": done,
+            "failed": failed,
+            "cancelled": cancelled,
+            "in_progress": in_progress,
+            "queued": queued,
+        },
+        "status_breakdown": status_breakdown,
+        "duration": {
+            "avg_minutes": avg_duration,
+            "min_minutes": min_duration,
+            "max_minutes": max_duration,
+            "median_minutes": median_duration,
+            "sample_count": len(duration_minutes),
+        },
+        "agent_performance": agent_performance,
+        "daily_trends": daily_trends,
+        "workflows": {
+            "total": wf_total,
+            "completed": wf_completed,
+            "failed": wf_failed,
+            "running": wf_running,
+            "success_rate": round((wf_completed / wf_total) * 100, 1) if wf_total > 0 else 0,
+        },
+    }
+
+
 @router.get("/agents", response_model=list[AgentInfo])
 async def list_agents(orch: Orchestrator = Depends(get_orchestrator)):
     agents = orch.runner.get_running_agents()
