@@ -372,3 +372,27 @@ docker stop test-preview && docker rm test-preview
 | `/etc/nginx/sites-available/preview.*` | nginx proxy config |
 | `/opt/factory/scripts/cleanup-*.sh` | Cleanup scripts |
 | `/etc/cron.d/factory-cleanup` | Scheduled cleanup |
+
+## Quick Setup Script
+
+For a quick nginx setup, use the provided script:
+
+```bash
+# From the factory directory
+./deploy/setup-nginx.sh factory.example.com admin
+
+# This will:
+# - Create nginx config for the main site and preview environments
+# - Set up basic auth
+# - Configure all required proxy routes (API, dashboard, static, SSE)
+# - Provide instructions for SSL setup with certbot
+```
+
+After running, set up SSL:
+```bash
+# Main domain
+certbot --nginx -d factory.example.com
+
+# Wildcard for previews (requires DNS challenge)
+certbot certonly --manual --preferred-challenges dns -d "*.preview.factory.example.com"
+```

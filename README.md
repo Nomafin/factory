@@ -39,6 +39,20 @@ Plane webhook / REST API
    └────────┘     └─────────────┘    └───────────┘
 ```
 
+## Deployment
+
+For production deployment with nginx:
+
+```bash
+# Set up nginx with dashboard, API, and preview environments
+./deploy/setup-nginx.sh your-domain.com admin
+
+# Get SSL certificates
+certbot --nginx -d your-domain.com
+```
+
+See [docs/infrastructure-setup.md](docs/infrastructure-setup.md) for full infrastructure setup including Docker preview environments.
+
 ## Quick Start
 
 ```bash
