@@ -49,6 +49,19 @@
     return '<span class="status-badge status-' + esc(status) + '">' + esc(status) + '</span>';
   }
 
+  // Display task ID - prefer Plane sequence ID if available
+  function taskDisplayId(task) {
+    if (task.plane_sequence_id) {
+      return 'FACT-' + task.plane_sequence_id;
+    }
+    return '#' + task.id;
+  }
+
+  // Get task ID for API calls (always use internal ID)
+  function taskApiId(task) {
+    return task.id;
+  }
+
   async function apiFetch(path) {
     try {
       var r = await fetch(API + path);
@@ -549,7 +562,7 @@
         h += '<div class="agent-card">';
         h += '<div class="agent-card-header">';
         h += '<div class="agent-card-title">';
-        h += (a.task_title || 'Task #' + a.task_id);
+        h += (a.task_title || 'Task ' + (a.plane_sequence_id ? 'FACT-' + a.plane_sequence_id : '#' + a.task_id));
         h += '</div>';
         h += statusBadge(a.status);
         h += '</div>';

@@ -53,13 +53,14 @@ async def create_task(
     # Create a corresponding Plane issue if no plane_issue_id provided
     if not body.plane_issue_id and orch.plane:
         try:
-            issue_id = await orch.plane.create_issue(
+            issue_id, sequence_id = await orch.plane.create_issue(
                 project_id=orch.config.plane.project_id,
                 title=body.title,
                 description=body.description or "",
                 state_id=orch.config.plane.states.queued,
             )
             body.plane_issue_id = issue_id
+            body.plane_sequence_id = sequence_id
         except Exception as e:
             logger.warning("Failed to create Plane issue: %s", e)
 
@@ -757,6 +758,7 @@ async def plane_webhook(request: Request, db: Database = Depends(get_db), orch: 
             repo=repo,
             agent_type=event.agent_type,
             plane_issue_id=event.issue_id,
+            plane_sequence_id=event.sequence_id,
         ))
         await orch.process_task(task.id)
         status = "revision_task_created" if is_revision else "task_created"

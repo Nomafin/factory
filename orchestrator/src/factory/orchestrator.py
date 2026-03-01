@@ -395,7 +395,9 @@ class Orchestrator:
                 )
             else:
                 # Fresh task: create a new branch
-                branch_name = f"agent/task-{task.id}-{_slugify(task.title)}"
+                # Use Plane sequence ID if available, otherwise fall back to internal ID
+                task_ref = task.plane_sequence_id or task.id
+                branch_name = f"agent/task-{task_ref}-{_slugify(task.title)}"
                 wt_path = await self.repo_manager.create_worktree(task.repo, branch_name)
                 await self.db.update_task_fields(task_id, branch_name=branch_name)
         except Exception as e:

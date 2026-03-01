@@ -21,6 +21,7 @@ class TaskCreate(BaseModel):
     repo: str = ""
     agent_type: str = "coder"
     plane_issue_id: str = ""
+    plane_sequence_id: int | None = None  # Human-readable Plane issue number
 
 
 class Task(BaseModel):
@@ -31,6 +32,7 @@ class Task(BaseModel):
     agent_type: str = "coder"
     status: TaskStatus = TaskStatus.QUEUED
     plane_issue_id: str = ""
+    plane_sequence_id: int | None = None  # Human-readable Plane issue number (e.g., 42 for "FACT-42")
     branch_name: str = ""
     pr_url: str = ""
     preview_url: str = ""

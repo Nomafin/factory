@@ -32,6 +32,7 @@ class PlaneEvent:
         state_group: str = "",
         repo: str = "",
         agent_type: str = "coder",
+        sequence_id: int | None = None,
     ):
         self.event_type = event_type
         self.action = action
@@ -42,6 +43,7 @@ class PlaneEvent:
         self.state_group = state_group
         self.repo = repo
         self.agent_type = agent_type
+        self.sequence_id = sequence_id
 
 
 def parse_webhook_event(payload: dict) -> PlaneEvent:
@@ -72,6 +74,7 @@ def parse_webhook_event(payload: dict) -> PlaneEvent:
         state_group=state.get("group", ""),
         repo=repo,
         agent_type=agent_type,
+        sequence_id=data.get("sequence_id"),
     )
 
 
@@ -91,8 +94,8 @@ class PlaneClient:
         )
 
     async def create_issue(self, project_id: str, title: str, description: str = "",
-                           state_id: str = "") -> str:
-        """Create a Plane issue. Returns the issue ID."""
+                           state_id: str = "") -> tuple[str, int | None]:
+        """Create a Plane issue. Returns (issue_id, sequence_id)."""
         url = f"{self.base_url}/api/v1/workspaces/{self.workspace_slug}/projects/{project_id}/work-items/"
         body: dict = {"name": title}
         if description:
@@ -101,7 +104,8 @@ class PlaneClient:
             body["state"] = state_id
         resp = await self._client.post(url, json=body)
         resp.raise_for_status()
-        return resp.json()["id"]
+        data = resp.json()
+        return data["id"], data.get("sequence_id")
 
     async def update_issue_state(self, project_id: str, issue_id: str, state_id: str):
         url = f"{self.base_url}/api/v1/workspaces/{self.workspace_slug}/projects/{project_id}/work-items/{issue_id}/"

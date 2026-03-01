@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     agent_type TEXT DEFAULT 'coder',
     status TEXT DEFAULT 'queued',
     plane_issue_id TEXT DEFAULT '',
+    plane_sequence_id INTEGER,
     branch_name TEXT DEFAULT '',
     pr_url TEXT DEFAULT '',
     error TEXT DEFAULT '',
@@ -111,6 +112,7 @@ MIGRATIONS = [
     "ALTER TABLE workflow_steps ADD COLUMN loop_to TEXT DEFAULT '';",
     "ALTER TABLE workflow_steps ADD COLUMN prompt_template TEXT DEFAULT '';",
     "ALTER TABLE tasks ADD COLUMN preview_url TEXT DEFAULT '';",
+    "ALTER TABLE tasks ADD COLUMN plane_sequence_id INTEGER;",
 ]
 
 
@@ -124,6 +126,7 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
         agent_type=row["agent_type"],
         status=TaskStatus(row["status"]),
         plane_issue_id=row["plane_issue_id"],
+        plane_sequence_id=row["plane_sequence_id"] if "plane_sequence_id" in keys else None,
         branch_name=row["branch_name"],
         pr_url=row["pr_url"],
         preview_url=row["preview_url"] if "preview_url" in keys else "",
@@ -218,9 +221,9 @@ class Database:
     async def create_task(self, task: TaskCreate) -> Task:
         now = datetime.now(timezone.utc).isoformat()
         cursor = await self._db.execute(
-            """INSERT INTO tasks (title, description, repo, agent_type, plane_issue_id, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (task.title, task.description, task.repo, task.agent_type, task.plane_issue_id, now),
+            """INSERT INTO tasks (title, description, repo, agent_type, plane_issue_id, plane_sequence_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (task.title, task.description, task.repo, task.agent_type, task.plane_issue_id, task.plane_sequence_id, now),
         )
         await self._db.commit()
         return await self.get_task(cursor.lastrowid)
