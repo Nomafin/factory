@@ -690,56 +690,165 @@
 
   // ── Analytics Page ─────────────────────────────────────────
 
+  // Track active Chart.js instances so we can destroy them before re-rendering
+  var _analyticsCharts = [];
+
+  function destroyAnalyticsCharts() {
+    _analyticsCharts.forEach(function(c) { try { c.destroy(); } catch (e) { /* ignore */ } });
+    _analyticsCharts = [];
+  }
+
+  function formatDuration(minutes) {
+    if (!minutes || minutes <= 0) return '-';
+    if (minutes < 1) return '<1m';
+    if (minutes < 60) return Math.round(minutes) + 'm';
+    var h = Math.floor(minutes / 60);
+    var m = Math.round(minutes % 60);
+    return h + 'h ' + m + 'm';
+  }
+
+  var chartColors = {
+    done: '#34d399',
+    failed: '#f87171',
+    cancelled: '#fb923c',
+    in_progress: '#6c8cff',
+    queued: '#5f6377',
+    waiting_for_input: '#f0b429',
+    in_review: '#a78bfa'
+  };
+
   async function renderAnalytics(el) {
+    destroyAnalyticsCharts();
+
+    var data = await apiFetch('/analytics');
     var tasks = await apiFetch('/tasks');
     if (!tasks) tasks = [];
 
-    var total = tasks.length;
-    var done = tasks.filter(function(t) { return t.status === 'done'; }).length;
-    var failed = tasks.filter(function(t) { return t.status === 'failed'; }).length;
-    var cancelled = tasks.filter(function(t) { return t.status === 'cancelled'; }).length;
-    var successRate = total > 0 ? Math.round((done / total) * 100) : 0;
+    // Fallback when analytics endpoint returns null
+    if (!data) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">&#x1F4C8;</div><h3>No analytics data</h3><p>Analytics will appear here once tasks are created.</p></div>';
+      return;
+    }
 
-    // Calculate average duration for completed tasks
-    var durations = tasks.filter(function(t) {
-      return t.status === 'done' && t.started_at && t.completed_at;
-    }).map(function(t) {
-      return new Date(t.completed_at) - new Date(t.started_at);
-    });
-    var avgDuration = durations.length > 0
-      ? Math.round(durations.reduce(function(a, b) { return a + b; }, 0) / durations.length / 60000)
-      : 0;
+    var summary = data.summary;
+    var duration = data.duration;
+    var agentPerf = data.agent_performance || [];
+    var trends = data.daily_trends || [];
+    var wf = data.workflows || {};
+    var statusBreakdown = data.status_breakdown || {};
 
     var h = '';
 
-    // Summary stats
+    // ── Summary stat cards ──
     h += '<div class="stat-grid">';
-    h += '<div class="stat-card"><div class="stat-label">Total Tasks</div><div class="stat-value">' + total + '</div></div>';
-    h += '<div class="stat-card"><div class="stat-label">Success Rate</div><div class="stat-value" style="color:var(--green)">' + successRate + '%</div><div class="stat-detail">' + done + ' of ' + total + ' tasks</div></div>';
-    h += '<div class="stat-card"><div class="stat-label">Avg Duration</div><div class="stat-value">' + (avgDuration > 0 ? avgDuration + 'm' : '-') + '</div><div class="stat-detail">For completed tasks</div></div>';
-    h += '<div class="stat-card"><div class="stat-label">Failure Rate</div><div class="stat-value" style="color:var(--red)">' + (total > 0 ? Math.round((failed / total) * 100) : 0) + '%</div><div class="stat-detail">' + failed + ' failed, ' + cancelled + ' cancelled</div></div>';
+    h += '<div class="stat-card"><div class="stat-label">Total Tasks</div><div class="stat-value">' + summary.total_tasks + '</div><div class="stat-detail">' + summary.in_progress + ' in progress, ' + summary.queued + ' queued</div></div>';
+    h += '<div class="stat-card"><div class="stat-label">Success Rate</div><div class="stat-value" style="color:var(--green)">' + summary.success_rate + '%</div><div class="stat-detail">' + summary.done + ' of ' + summary.total_tasks + ' tasks completed</div></div>';
+    h += '<div class="stat-card"><div class="stat-label">Avg Duration</div><div class="stat-value">' + formatDuration(duration.avg_minutes) + '</div><div class="stat-detail">Median: ' + formatDuration(duration.median_minutes) + ' (' + duration.sample_count + ' tasks)</div></div>';
+    h += '<div class="stat-card"><div class="stat-label">Failure Rate</div><div class="stat-value" style="color:var(--red)">' + summary.failure_rate + '%</div><div class="stat-detail">' + summary.failed + ' failed, ' + summary.cancelled + ' cancelled</div></div>';
     h += '</div>';
 
-    // Status breakdown
+    // ── Charts row ──
+    h += '<div class="analytics-charts-row">';
+
+    // Status distribution donut chart
+    h += '<div class="card analytics-chart-card">';
+    h += '<div class="card-header"><div class="card-title">Task Status Distribution</div></div>';
+    h += '<div class="analytics-chart-container"><canvas id="statusChart"></canvas></div>';
+    h += '</div>';
+
+    // Daily trends line chart
+    h += '<div class="card analytics-chart-card analytics-chart-wide">';
+    h += '<div class="card-header"><div class="card-title">Task Trends (Last 30 Days)</div></div>';
+    h += '<div class="analytics-chart-container"><canvas id="trendsChart"></canvas></div>';
+    h += '</div>';
+
+    h += '</div>';
+
+    // ── Second row: Agent performance + Duration stats ──
     h += '<div class="analytics-grid">';
+
+    // Agent performance
+    h += '<div class="card">';
+    h += '<div class="card-header"><div class="card-title">Agent Performance</div></div>';
+    if (agentPerf.length === 0) {
+      h += '<div class="empty-state" style="padding:20px"><p>No agent data yet</p></div>';
+    } else {
+      h += '<table class="data-table analytics-table"><thead><tr>';
+      h += '<th>Agent Type</th><th>Tasks</th><th>Success</th><th>Failed</th><th>Rate</th><th>Avg Time</th>';
+      h += '</tr></thead><tbody>';
+      agentPerf.forEach(function(a) {
+        var rateColor = a.success_rate >= 80 ? 'var(--green)' : a.success_rate >= 50 ? 'var(--yellow)' : 'var(--red)';
+        h += '<tr>';
+        h += '<td><span class="agent-type-badge">' + esc(a.agent_type) + '</span></td>';
+        h += '<td>' + a.total + '</td>';
+        h += '<td style="color:var(--green)">' + a.done + '</td>';
+        h += '<td style="color:var(--red)">' + a.failed + '</td>';
+        h += '<td style="color:' + rateColor + ';font-weight:600">' + a.success_rate + '%</td>';
+        h += '<td>' + formatDuration(a.avg_duration) + '</td>';
+        h += '</tr>';
+      });
+      h += '</tbody></table>';
+
+      // Agent performance bar chart
+      h += '<div class="analytics-chart-container" style="margin-top:16px"><canvas id="agentChart"></canvas></div>';
+    }
+    h += '</div>';
+
+    // Duration & workflow metrics
+    h += '<div class="card">';
+    h += '<div class="card-header"><div class="card-title">Duration Metrics</div></div>';
+    if (duration.sample_count === 0) {
+      h += '<div class="empty-state" style="padding:20px"><p>No completed tasks yet</p></div>';
+    } else {
+      h += '<div class="analytics-metrics-grid">';
+      h += '<div class="analytics-metric"><div class="analytics-metric-value">' + formatDuration(duration.avg_minutes) + '</div><div class="analytics-metric-label">Average</div></div>';
+      h += '<div class="analytics-metric"><div class="analytics-metric-value">' + formatDuration(duration.median_minutes) + '</div><div class="analytics-metric-label">Median</div></div>';
+      h += '<div class="analytics-metric"><div class="analytics-metric-value">' + formatDuration(duration.min_minutes) + '</div><div class="analytics-metric-label">Fastest</div></div>';
+      h += '<div class="analytics-metric"><div class="analytics-metric-value">' + formatDuration(duration.max_minutes) + '</div><div class="analytics-metric-label">Slowest</div></div>';
+      h += '</div>';
+    }
+
+    // Workflow stats
+    h += '<div class="card-header" style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)"><div class="card-title">Workflow Metrics</div></div>';
+    if (wf.total === 0) {
+      h += '<div class="empty-state" style="padding:20px"><p>No workflows yet</p></div>';
+    } else {
+      h += '<div class="analytics-metrics-grid">';
+      h += '<div class="analytics-metric"><div class="analytics-metric-value">' + wf.total + '</div><div class="analytics-metric-label">Total</div></div>';
+      h += '<div class="analytics-metric"><div class="analytics-metric-value" style="color:var(--green)">' + wf.completed + '</div><div class="analytics-metric-label">Completed</div></div>';
+      h += '<div class="analytics-metric"><div class="analytics-metric-value" style="color:var(--red)">' + wf.failed + '</div><div class="analytics-metric-label">Failed</div></div>';
+      h += '<div class="analytics-metric"><div class="analytics-metric-value" style="color:var(--accent)">' + wf.running + '</div><div class="analytics-metric-label">Running</div></div>';
+      h += '</div>';
+      var wfRateColor = wf.success_rate >= 80 ? 'var(--green)' : wf.success_rate >= 50 ? 'var(--yellow)' : 'var(--red)';
+      h += '<div style="text-align:center;margin-top:12px;font-size:13px;color:var(--text-dim)">Success rate: <span style="color:' + wfRateColor + ';font-weight:600">' + wf.success_rate + '%</span></div>';
+    }
+    h += '</div>';
+
+    h += '</div>';
+
+    // ── Status breakdown bars + Recent activity ──
+    h += '<div class="analytics-grid">';
+
+    // Status breakdown with progress bars
     h += '<div class="card">';
     h += '<div class="card-header"><div class="card-title">Status Breakdown</div></div>';
-    var statuses = {};
-    tasks.forEach(function(t) { statuses[t.status] = (statuses[t.status] || 0) + 1; });
-    if (Object.keys(statuses).length === 0) {
+    var statusOrder = ['done', 'in_progress', 'queued', 'waiting_for_input', 'in_review', 'failed', 'cancelled'];
+    var hasStatusData = false;
+    statusOrder.forEach(function(s) { if (statusBreakdown[s]) hasStatusData = true; });
+    if (!hasStatusData) {
       h += '<div class="empty-state" style="padding:20px"><p>No data yet</p></div>';
     } else {
-      h += '<div style="display:flex;flex-direction:column;gap:8px">';
-      var statusOrder = ['done', 'in_progress', 'queued', 'waiting_for_input', 'in_review', 'failed', 'cancelled'];
+      h += '<div class="analytics-status-bars">';
       statusOrder.forEach(function(s) {
-        if (!statuses[s]) return;
-        var pct = Math.round((statuses[s] / total) * 100);
-        h += '<div style="display:flex;align-items:center;gap:10px">';
-        h += '<div style="width:120px">' + statusBadge(s) + '</div>';
-        h += '<div style="flex:1;background:var(--surface2);border-radius:4px;height:20px;overflow:hidden">';
-        h += '<div style="height:100%;width:' + pct + '%;background:var(--accent);border-radius:4px;transition:width 0.3s"></div>';
+        if (!statusBreakdown[s]) return;
+        var pct = summary.total_tasks > 0 ? Math.round((statusBreakdown[s] / summary.total_tasks) * 100) : 0;
+        var barColor = chartColors[s] || 'var(--accent)';
+        h += '<div class="analytics-status-row">';
+        h += '<div class="analytics-status-label">' + statusBadge(s) + '</div>';
+        h += '<div class="analytics-status-bar-bg">';
+        h += '<div class="analytics-status-bar-fill" style="width:' + pct + '%;background:' + barColor + '"></div>';
         h += '</div>';
-        h += '<div style="width:60px;text-align:right;font-size:13px;color:var(--text-dim)">' + statuses[s] + ' (' + pct + '%)</div>';
+        h += '<div class="analytics-status-count">' + statusBreakdown[s] + ' (' + pct + '%)</div>';
         h += '</div>';
       });
       h += '</div>';
@@ -751,15 +860,17 @@
     h += '<div class="card-header"><div class="card-title">Recent Activity</div></div>';
     var sorted = tasks.slice().sort(function(a, b) {
       return new Date(b.created_at) - new Date(a.created_at);
-    }).slice(0, 10);
+    }).slice(0, 12);
     if (sorted.length === 0) {
       h += '<div class="empty-state" style="padding:20px"><p>No activity yet</p></div>';
     } else {
       h += '<div class="log-entries">';
       sorted.forEach(function(t) {
-        h += '<div class="log-entry">';
+        h += '<div class="log-entry analytics-activity-entry">';
         h += '<span class="log-time">' + timeAgo(t.created_at) + '</span>';
-        h += '#' + t.id + ' ' + esc(t.title) + ' - ' + esc(t.status);
+        h += '<span class="analytics-activity-id">#' + t.id + '</span> ';
+        h += '<span class="analytics-activity-title">' + esc(t.title) + '</span> ';
+        h += statusBadge(t.status);
         h += '</div>';
       });
       h += '</div>';
@@ -769,6 +880,182 @@
     h += '</div>';
 
     el.innerHTML = h;
+
+    // ── Render Chart.js charts after DOM update ──
+    if (typeof Chart !== 'undefined') {
+      renderAnalyticsCharts(statusBreakdown, trends, agentPerf);
+    }
+  }
+
+  function renderAnalyticsCharts(statusBreakdown, trends, agentPerf) {
+    var chartDefaults = {
+      color: '#8b8fa3',
+      borderColor: '#2d3140',
+      font: { family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" }
+    };
+    Chart.defaults.color = chartDefaults.color;
+    Chart.defaults.borderColor = chartDefaults.borderColor;
+
+    // ── Status donut chart ──
+    var statusCtx = document.getElementById('statusChart');
+    if (statusCtx) {
+      var statusLabels = [];
+      var statusValues = [];
+      var statusColors = [];
+      var statusOrder = ['done', 'in_progress', 'queued', 'waiting_for_input', 'in_review', 'failed', 'cancelled'];
+      var statusNames = {
+        done: 'Done', in_progress: 'In Progress', queued: 'Queued',
+        waiting_for_input: 'Waiting', in_review: 'In Review',
+        failed: 'Failed', cancelled: 'Cancelled'
+      };
+      statusOrder.forEach(function(s) {
+        if (statusBreakdown[s]) {
+          statusLabels.push(statusNames[s] || s);
+          statusValues.push(statusBreakdown[s]);
+          statusColors.push(chartColors[s] || '#5f6377');
+        }
+      });
+      var chart1 = new Chart(statusCtx, {
+        type: 'doughnut',
+        data: {
+          labels: statusLabels,
+          datasets: [{
+            data: statusValues,
+            backgroundColor: statusColors,
+            borderColor: '#1a1d27',
+            borderWidth: 2,
+            hoverBorderWidth: 0
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          cutout: '65%',
+          plugins: {
+            legend: {
+              position: 'bottom',
+              labels: { padding: 16, usePointStyle: true, pointStyleWidth: 10, font: { size: 12 } }
+            }
+          }
+        }
+      });
+      _analyticsCharts.push(chart1);
+    }
+
+    // ── Trends line chart ──
+    var trendsCtx = document.getElementById('trendsChart');
+    if (trendsCtx && trends.length > 0) {
+      var trendLabels = trends.map(function(d) {
+        var parts = d.date.split('-');
+        return parts[1] + '/' + parts[2];
+      });
+      var chart2 = new Chart(trendsCtx, {
+        type: 'line',
+        data: {
+          labels: trendLabels,
+          datasets: [
+            {
+              label: 'Created',
+              data: trends.map(function(d) { return d.created; }),
+              borderColor: '#6c8cff',
+              backgroundColor: 'rgba(108, 140, 255, 0.1)',
+              fill: true,
+              tension: 0.3,
+              pointRadius: 2,
+              pointHoverRadius: 5,
+              borderWidth: 2
+            },
+            {
+              label: 'Completed',
+              data: trends.map(function(d) { return d.completed; }),
+              borderColor: '#34d399',
+              backgroundColor: 'rgba(52, 211, 153, 0.1)',
+              fill: true,
+              tension: 0.3,
+              pointRadius: 2,
+              pointHoverRadius: 5,
+              borderWidth: 2
+            },
+            {
+              label: 'Failed',
+              data: trends.map(function(d) { return d.failed; }),
+              borderColor: '#f87171',
+              backgroundColor: 'rgba(248, 113, 113, 0.1)',
+              fill: true,
+              tension: 0.3,
+              pointRadius: 2,
+              pointHoverRadius: 5,
+              borderWidth: 2
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { intersect: false, mode: 'index' },
+          scales: {
+            x: {
+              grid: { display: false },
+              ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10, font: { size: 11 } }
+            },
+            y: {
+              beginAtZero: true,
+              grid: { color: 'rgba(45, 49, 64, 0.5)' },
+              ticks: { stepSize: 1, font: { size: 11 } }
+            }
+          },
+          plugins: {
+            legend: {
+              position: 'top',
+              labels: { padding: 16, usePointStyle: true, pointStyleWidth: 10, font: { size: 12 } }
+            }
+          }
+        }
+      });
+      _analyticsCharts.push(chart2);
+    }
+
+    // ── Agent performance bar chart ──
+    var agentCtx = document.getElementById('agentChart');
+    if (agentCtx && agentPerf.length > 0) {
+      var chart3 = new Chart(agentCtx, {
+        type: 'bar',
+        data: {
+          labels: agentPerf.map(function(a) { return a.agent_type; }),
+          datasets: [
+            {
+              label: 'Completed',
+              data: agentPerf.map(function(a) { return a.done; }),
+              backgroundColor: '#34d399',
+              borderRadius: 4,
+              barPercentage: 0.7
+            },
+            {
+              label: 'Failed',
+              data: agentPerf.map(function(a) { return a.failed; }),
+              backgroundColor: '#f87171',
+              borderRadius: 4,
+              barPercentage: 0.7
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: { grid: { display: false }, stacked: true },
+            y: { beginAtZero: true, grid: { color: 'rgba(45, 49, 64, 0.5)' }, stacked: true, ticks: { stepSize: 1 } }
+          },
+          plugins: {
+            legend: {
+              position: 'top',
+              labels: { padding: 12, usePointStyle: true, pointStyleWidth: 10, font: { size: 11 } }
+            }
+          }
+        }
+      });
+      _analyticsCharts.push(chart3);
+    }
   }
 
   // ── Badges & Health ────────────────────────────────────────
