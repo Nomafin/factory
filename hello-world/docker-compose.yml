@@ -1,0 +1,36 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${FACTORY_SERVICE_PORT:-3000}"
+    labels:
+      # Factory labels (required for cleanup and identification)
+      - "factory.task-id=${FACTORY_TASK_ID}"
+      - "factory.repo=${FACTORY_REPO}"
+      - "factory.env-type=test"
+      - "factory.created=${FACTORY_CREATED:-0}"
+      # Traefik: enable auto-discovery
+      - "traefik.enable=true"
+      # Web entrypoint router (nginx terminates TLS, forwards plain HTTP)
+      # Explicitly linked to the task-N service created by Factory override
+      - "traefik.http.routers.task-${FACTORY_TASK_ID:-0}-web.rule=Host(`${FACTORY_HOSTNAME:-localhost}`)"
+      - "traefik.http.routers.task-${FACTORY_TASK_ID:-0}-web.entrypoints=web"
+      - "traefik.http.routers.task-${FACTORY_TASK_ID:-0}-web.service=task-${FACTORY_TASK_ID:-0}"
+    environment:
+      - NODE_ENV=production
+      - PORT=${FACTORY_SERVICE_PORT:-3000}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${FACTORY_SERVICE_PORT:-3000}/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - default
+      - factory-preview
+
+networks:
+  factory-preview:
+    external: true
