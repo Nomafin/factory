@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 from factory.config import Config
 from factory.db import Database
 from factory.deps import get_config, get_db, get_orchestrator
+from factory.docker_toolkit import PREVIEW_DOMAIN
 from factory.models import (
     AgentHandoff, AgentInfo, CodeReviewCreate, HandoffCreate,
     Message, MessageCreate, MessageType,
@@ -411,6 +413,180 @@ async def list_agents(orch: Orchestrator = Depends(get_orchestrator)):
         )
         for a in agents.values()
     ]
+
+
+# ── Preview environment endpoints ──────────────────────────────────────
+
+
+def _list_factory_containers() -> list[dict]:
+    """Query Docker for containers with factory.task-id label.
+
+    Returns a list of dicts with container info including labels,
+    status, ports, and calculated preview URL.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "docker", "ps", "-a",
+                "--filter", "label=factory.task-id",
+                "--format", "{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}\t{{.Labels}}\t{{.CreatedAt}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        logger.warning("Failed to query Docker containers: %s", exc)
+        return []
+
+    if result.returncode != 0:
+        logger.warning(
+            "docker ps failed (rc=%d): %s",
+            result.returncode, result.stderr.strip(),
+        )
+        return []
+
+    containers = []
+    now = time.time()
+    for line in result.stdout.strip().split("\n"):
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) < 6:
+            continue
+        container_id, name, status, ports, labels_str, created_at = parts
+
+        # Parse labels into dict
+        labels = {}
+        for label in labels_str.split(","):
+            label = label.strip()
+            if "=" in label:
+                k, v = label.split("=", 1)
+                labels[k] = v
+
+        task_id = labels.get("factory.task-id", "")
+        env_type = labels.get("factory.env-type", "unknown")
+        repo = labels.get("factory.repo", "")
+        created_ts = labels.get("factory.created", "")
+
+        # Calculate age
+        age_seconds = 0
+        if created_ts:
+            try:
+                age_seconds = int(now - int(created_ts))
+            except ValueError:
+                pass
+
+        # Determine preview URL from hostname label or task/PR info
+        hostname = labels.get("factory.hostname", "")
+        pr_number = labels.get("factory.pr-number", "")
+        if not hostname:
+            if pr_number:
+                hostname = f"pr-{pr_number}.{PREVIEW_DOMAIN}"
+            elif task_id:
+                hostname = f"task-{task_id}.{PREVIEW_DOMAIN}"
+        preview_url = f"https://{hostname}" if hostname else ""
+
+        # Determine health from status string
+        health = "unknown"
+        status_lower = status.lower()
+        if "up" in status_lower:
+            if "(healthy)" in status_lower:
+                health = "healthy"
+            elif "(health: starting)" in status_lower or "starting" in status_lower:
+                health = "starting"
+            elif "(unhealthy)" in status_lower:
+                health = "unhealthy"
+            else:
+                health = "running"
+        elif "exited" in status_lower or "dead" in status_lower:
+            health = "stopped"
+        elif "created" in status_lower:
+            health = "created"
+
+        containers.append({
+            "container_id": container_id,
+            "name": name,
+            "task_id": task_id,
+            "env_type": env_type,
+            "repo": repo,
+            "url": preview_url,
+            "status": status,
+            "health": health,
+            "ports": ports,
+            "created_at": created_at,
+            "created_ts": created_ts,
+            "age_seconds": age_seconds,
+        })
+
+    return containers
+
+
+@router.get("/preview-environments")
+async def list_preview_environments():
+    """List all Factory Docker containers (test and preview environments)."""
+    loop = asyncio.get_event_loop()
+    containers = await loop.run_in_executor(None, _list_factory_containers)
+    return containers
+
+
+def _remove_container(container_id: str) -> dict:
+    """Stop and remove a Docker container by ID.
+
+    Returns a dict with status and optional error message.
+    """
+    try:
+        # Stop the container
+        stop_result = subprocess.run(
+            ["docker", "stop", container_id],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if stop_result.returncode != 0:
+            logger.warning(
+                "docker stop failed for %s: %s",
+                container_id, stop_result.stderr.strip(),
+            )
+
+        # Remove the container
+        rm_result = subprocess.run(
+            ["docker", "rm", container_id],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if rm_result.returncode != 0:
+            return {
+                "status": "error",
+                "error": f"Failed to remove container: {rm_result.stderr.strip()}",
+            }
+
+        return {"status": "removed", "container_id": container_id}
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": "Docker command timed out"}
+    except FileNotFoundError:
+        return {"status": "error", "error": "Docker not available"}
+
+
+@router.delete("/preview-environments/{container_id}")
+async def delete_preview_environment(container_id: str):
+    """Stop and remove a Factory Docker container."""
+    # Validate the container exists and is a factory container
+    loop = asyncio.get_event_loop()
+    containers = await loop.run_in_executor(None, _list_factory_containers)
+
+    matching = [c for c in containers if c["container_id"].startswith(container_id)]
+    if not matching:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Container {container_id} not found or not a Factory container",
+        )
+
+    result = await loop.run_in_executor(None, _remove_container, container_id)
+    if result["status"] == "error":
+        raise HTTPException(status_code=500, detail=result["error"])
+    return result
 
 
 @router.post("/webhooks/plane")

@@ -569,42 +569,124 @@
 
   // ── Preview Page ───────────────────────────────────────────
 
-  async function renderPreview(el) {
-    // Previews are tasks with preview_url set
-    var tasks = await apiFetch('/tasks');
-    if (!tasks) tasks = [];
+  function healthBadge(health) {
+    var cls = 'health-badge health-' + esc(health);
+    var icon = '';
+    switch (health) {
+      case 'healthy': icon = '&#x2705;'; break;
+      case 'running': icon = '&#x1F7E2;'; break;
+      case 'unhealthy': icon = '&#x274C;'; break;
+      case 'starting': icon = '&#x1F7E1;'; break;
+      case 'stopped': icon = '&#x26D4;'; break;
+      case 'created': icon = '&#x1F535;'; break;
+      default: icon = '&#x2753;';
+    }
+    return '<span class="' + cls + '">' + icon + ' ' + esc(health) + '</span>';
+  }
 
-    var previews = tasks.filter(function(t) { return t.preview_url; });
+  function formatAge(seconds) {
+    if (!seconds || seconds < 0) return '-';
+    if (seconds < 60) return seconds + 's';
+    if (seconds < 3600) return Math.floor(seconds / 60) + 'm';
+    if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ' + Math.floor((seconds % 3600) / 60) + 'm';
+    return Math.floor(seconds / 86400) + 'd ' + Math.floor((seconds % 86400) / 3600) + 'h';
+  }
+
+  function envTypeBadge(envType) {
+    if (envType === 'preview') {
+      return '<span class="env-type-badge env-type-preview">preview</span>';
+    }
+    if (envType === 'test') {
+      return '<span class="env-type-badge env-type-test">test</span>';
+    }
+    return '<span class="env-type-badge">' + esc(envType) + '</span>';
+  }
+
+  async function renderPreview(el) {
+    var containers = await apiFetch('/preview-environments');
+    if (!containers) containers = [];
 
     var h = '';
 
     h += '<div class="toolbar">';
     h += '<button class="btn btn-sm btn-secondary" onclick="window.location.hash=\'#/preview\'">Refresh</button>';
-    h += '<span class="refresh-indicator">' + previews.length + ' preview environment' + (previews.length !== 1 ? 's' : '') + '</span>';
+    h += '<span class="refresh-indicator">' + containers.length + ' environment' + (containers.length !== 1 ? 's' : '') + '</span>';
+    h += '<span class="auto-refresh-dot" title="Auto-refreshing every 10s"></span>';
     h += '</div>';
 
-    if (previews.length === 0) {
-      h += '<div class="empty-state"><div class="icon">&#x1F310;</div><h3>No preview environments</h3><p>Preview URLs will appear here when tasks deploy preview environments.</p></div>';
+    if (containers.length === 0) {
+      h += '<div class="empty-state"><div class="icon">&#x1F310;</div><h3>No preview environments</h3><p>Docker containers with Factory labels will appear here when tasks spin up test or preview environments.</p></div>';
     } else {
       h += '<div class="preview-grid">';
-      previews.forEach(function(t) {
+      containers.forEach(function(c) {
         h += '<div class="preview-card">';
+
+        // Header: name + health badge
         h += '<div class="preview-card-header">';
-        h += '<div><div class="agent-card-title">' + esc(t.title) + '</div>';
-        h += '<div style="margin-top:4px">' + statusBadge(t.status) + '</div></div>';
+        h += '<div class="preview-card-title">' + esc(c.name) + '</div>';
+        h += healthBadge(c.health);
         h += '</div>';
-        h += '<a class="preview-url" href="' + esc(t.preview_url) + '" target="_blank">' + esc(t.preview_url) + '</a>';
+
+        // Type + Task ID
+        h += '<div class="preview-card-tags">';
+        h += envTypeBadge(c.env_type);
+        if (c.task_id) {
+          h += '<span class="preview-task-link" onclick="window.location.hash=\'#/tasks/' + esc(c.task_id) + '\'">Task #' + esc(c.task_id) + '</span>';
+        }
+        h += '</div>';
+
+        // URL
+        if (c.url) {
+          h += '<a class="preview-url" href="' + esc(c.url) + '" target="_blank">' + esc(c.url) + '</a>';
+        }
+
+        // Metadata
         h += '<div class="agent-card-meta" style="margin-top:12px">';
-        h += '<div class="meta-row"><span class="label">Task</span><span class="value"><a style="color:var(--accent);cursor:pointer" onclick="window.location.hash=\'#/tasks/' + t.id + '\'">#' + t.id + '</a></span></div>';
-        if (t.pr_url) h += '<div class="meta-row"><span class="label">PR</span><span class="value"><a style="color:var(--accent)" href="' + esc(t.pr_url) + '" target="_blank">View PR</a></span></div>';
-        h += '<div class="meta-row"><span class="label">Created</span><span class="value">' + timeAgo(t.created_at) + '</span></div>';
-        h += '</div></div>';
+        if (c.repo) {
+          h += '<div class="meta-row"><span class="label">Repo</span><span class="value">' + esc(c.repo) + '</span></div>';
+        }
+        h += '<div class="meta-row"><span class="label">Status</span><span class="value">' + esc(c.status) + '</span></div>';
+        h += '<div class="meta-row"><span class="label">Created</span><span class="value">' + esc(c.created_at) + '</span></div>';
+        h += '<div class="meta-row"><span class="label">Age</span><span class="value">' + formatAge(c.age_seconds) + '</span></div>';
+        h += '<div class="meta-row"><span class="label">Container</span><span class="value" style="font-family:monospace;font-size:11px">' + esc(c.container_id) + '</span></div>';
+        h += '</div>';
+
+        // Actions
+        h += '<div class="preview-card-actions">';
+        if (c.url) {
+          h += '<a class="btn btn-sm btn-primary" href="' + esc(c.url) + '" target="_blank">Open URL</a>';
+        }
+        h += '<button class="btn btn-sm btn-danger" onclick="window.__teardownEnv(\'' + esc(c.container_id) + '\', \'' + esc(c.name) + '\')">Teardown</button>';
+        h += '</div>';
+
+        h += '</div>';
       });
       h += '</div>';
     }
 
     el.innerHTML = h;
   }
+
+  window.__teardownEnv = async function(containerId, name) {
+    if (!confirm('Tear down environment "' + name + '"?\n\nThis will stop and remove the container.')) {
+      return;
+    }
+    try {
+      var r = await fetch(API + '/preview-environments/' + containerId, {
+        method: 'DELETE',
+      });
+      if (r.ok) {
+        // Refresh the page
+        var content = document.getElementById('pageContent');
+        if (content) await renderPreview(content);
+      } else {
+        var data = await r.json();
+        alert('Failed to tear down: ' + (data.detail || 'Unknown error'));
+      }
+    } catch (e) {
+      alert('Failed to tear down: ' + e.message);
+    }
+  };
 
   // ── Analytics Page ─────────────────────────────────────────
 

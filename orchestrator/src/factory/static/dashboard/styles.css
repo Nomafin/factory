@@ -165,10 +165,31 @@ body {
 .agent-card-meta .meta-row .value { color: var(--text-dim); }
 
 .preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 16px; }
-.preview-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
-.preview-card-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 12px; }
-.preview-url { font-size: 13px; color: var(--accent); text-decoration: none; word-break: break-all; }
+.preview-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; transition: border-color 0.2s; }
+.preview-card:hover { border-color: var(--border-light); }
+.preview-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.preview-card-title { font-size: 14px; font-weight: 600; word-break: break-all; }
+.preview-card-tags { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.preview-card-actions { display: flex; gap: 8px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.preview-url { font-size: 13px; color: var(--accent); text-decoration: none; word-break: break-all; display: block; margin-top: 4px; }
 .preview-url:hover { text-decoration: underline; }
+.preview-task-link { font-size: 12px; color: var(--accent); cursor: pointer; font-weight: 500; }
+.preview-task-link:hover { text-decoration: underline; }
+
+/* Health badges */
+.health-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
+.health-healthy { background: var(--green-dim); color: var(--green); }
+.health-running { background: var(--green-dim); color: var(--green); }
+.health-unhealthy { background: var(--red-dim); color: var(--red); }
+.health-starting { background: var(--yellow-dim); color: var(--yellow); }
+.health-stopped { background: var(--red-dim); color: var(--red); }
+.health-created { background: var(--accent-dim); color: var(--accent); }
+.health-unknown { background: var(--surface2); color: var(--text-dim); }
+
+/* Env type badges */
+.env-type-badge { display: inline-flex; align-items: center; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 7px; border-radius: 4px; background: var(--surface2); color: var(--text-dim); }
+.env-type-preview { background: var(--purple-dim); color: var(--purple); }
+.env-type-test { background: var(--orange-dim); color: var(--orange); }
 
 .chart-placeholder { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 40px; display: flex; align-items: center; justify-content: center; flex-direction: column; min-height: 250px; color: var(--text-muted); font-size: 14px; gap: 8px; }
 .analytics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
