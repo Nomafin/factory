@@ -1,0 +1,605 @@
+// Factory Dashboard - Main Application
+(function() {
+  'use strict';
+
+  var API = '/api';
+  var state = {
+    currentPage: 'dashboard',
+    tasks: [],
+    agents: [],
+    workflows: [],
+    messages: [],
+    healthy: false,
+    sidebarOpen: false,
+    loading: false,
+    taskDetail: null,
+    taskLogs: []
+  };
+
+  // ── Utilities ──────────────────────────────────────────────
+
+  function esc(s) {
+    if (!s) return '';
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function timeAgo(iso) {
+    if (!iso) return '-';
+    var d = new Date(iso);
+    var now = new Date();
+    var diff = now - d;
+    if (diff < 60000) return 'just now';
+    if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+    if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function formatDate(iso) {
+    if (!iso) return '-';
+    var d = new Date(iso);
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  function statusBadge(status) {
+    return '<span class="status-badge status-' + esc(status) + '">' + esc(status) + '</span>';
+  }
+
+  async function apiFetch(path) {
+    try {
+      var r = await fetch(API + path);
+      if (!r.ok) return null;
+      return await r.json();
+    } catch (e) {
+      console.error('API error:', path, e);
+      return null;
+    }
+  }
+
+  async function apiPost(path, body) {
+    try {
+      var r = await fetch(API + path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!r.ok) return null;
+      return await r.json();
+    } catch (e) {
+      console.error('API error:', path, e);
+      return null;
+    }
+  }
+
+  // ── Router ─────────────────────────────────────────────────
+
+  function navigate(page, params) {
+    var hash = '#/' + page;
+    if (params) hash += '/' + params;
+    window.location.hash = hash;
+  }
+
+  function parseRoute() {
+    var hash = window.location.hash || '#/dashboard';
+    var parts = hash.replace('#/', '').split('/');
+    return { page: parts[0] || 'dashboard', param: parts[1] || null };
+  }
+
+  async function handleRoute() {
+    var route = parseRoute();
+    state.currentPage = route.page;
+    updateNav();
+
+    var content = document.getElementById('pageContent');
+    var pageTitle = document.getElementById('pageTitle');
+
+    content.innerHTML = '<div class="loading"><div class="spinner"></div> Loading...</div>';
+
+    switch (route.page) {
+      case 'dashboard':
+        pageTitle.textContent = 'Dashboard';
+        await renderDashboard(content);
+        break;
+      case 'tasks':
+        if (route.param) {
+          pageTitle.textContent = 'Task Detail';
+          await renderTaskDetail(content, route.param);
+        } else {
+          pageTitle.textContent = 'Tasks';
+          await renderTasks(content);
+        }
+        break;
+      case 'agents':
+        pageTitle.textContent = 'Agents';
+        await renderAgents(content);
+        break;
+      case 'preview':
+        pageTitle.textContent = 'Preview Environments';
+        await renderPreview(content);
+        break;
+      case 'analytics':
+        pageTitle.textContent = 'Analytics';
+        await renderAnalytics(content);
+        break;
+      default:
+        pageTitle.textContent = 'Not Found';
+        content.innerHTML = '<div class="empty-state"><div class="icon">404</div><h3>Page not found</h3><p>The page you\'re looking for doesn\'t exist.</p></div>';
+    }
+
+    content.classList.remove('page-enter');
+    void content.offsetWidth;
+    content.classList.add('page-enter');
+  }
+
+  function updateNav() {
+    var items = document.querySelectorAll('.nav-item');
+    items.forEach(function(item) {
+      var target = item.getAttribute('data-page');
+      if (target === state.currentPage) {
+        item.classList.add('active');
+      } else {
+        item.classList.remove('active');
+      }
+    });
+  }
+
+  // ── Dashboard Page ─────────────────────────────────────────
+
+  async function renderDashboard(el) {
+    var tasks = await apiFetch('/tasks');
+    var agents = await apiFetch('/agents');
+    var workflows = await apiFetch('/workflows');
+
+    if (!tasks) tasks = [];
+    if (!agents) agents = [];
+    if (!workflows) workflows = [];
+
+    state.tasks = tasks;
+    state.agents = agents;
+    state.workflows = workflows;
+
+    var inProgress = tasks.filter(function(t) { return t.status === 'in_progress'; }).length;
+    var queued = tasks.filter(function(t) { return t.status === 'queued'; }).length;
+    var done = tasks.filter(function(t) { return t.status === 'done'; }).length;
+    var failed = tasks.filter(function(t) { return t.status === 'failed'; }).length;
+
+    var h = '';
+
+    // Stats
+    h += '<div class="stat-grid">';
+    h += '<div class="stat-card"><div class="stat-label">Total Tasks</div><div class="stat-value">' + tasks.length + '</div><div class="stat-detail">' + done + ' completed</div></div>';
+    h += '<div class="stat-card"><div class="stat-label">In Progress</div><div class="stat-value" style="color:var(--accent)">' + inProgress + '</div><div class="stat-detail">' + queued + ' queued</div></div>';
+    h += '<div class="stat-card"><div class="stat-label">Active Agents</div><div class="stat-value" style="color:var(--green)">' + agents.length + '</div><div class="stat-detail">Running now</div></div>';
+    h += '<div class="stat-card"><div class="stat-label">Failed</div><div class="stat-value" style="color:var(--red)">' + failed + '</div><div class="stat-detail">Need attention</div></div>';
+    h += '</div>';
+
+    // Recent tasks
+    h += '<div class="card" style="margin-bottom:20px">';
+    h += '<div class="card-header"><div class="card-title">Recent Tasks</div>';
+    h += '<a class="btn btn-sm btn-secondary" onclick="event.preventDefault();window.location.hash=\'#/tasks\'" href="#/tasks">View All</a></div>';
+
+    var recent = tasks.slice(0, 8);
+    if (recent.length === 0) {
+      h += '<div class="empty-state" style="padding:30px"><div class="icon">&#x1F4CB;</div><h3>No tasks yet</h3><p>Tasks will appear here when created via API or Plane webhook.</p></div>';
+    } else {
+      h += '<table class="data-table"><thead><tr>';
+      h += '<th>ID</th><th>Title</th><th>Status</th><th>Created</th>';
+      h += '</tr></thead><tbody>';
+      recent.forEach(function(t) {
+        h += '<tr onclick="window.location.hash=\'#/tasks/' + t.id + '\'">';
+        h += '<td class="id-col">#' + t.id + '</td>';
+        h += '<td class="title-col">' + esc(t.title) + '</td>';
+        h += '<td>' + statusBadge(t.status) + '</td>';
+        h += '<td class="time-col">' + timeAgo(t.created_at) + '</td>';
+        h += '</tr>';
+      });
+      h += '</tbody></table>';
+    }
+    h += '</div>';
+
+    // Active agents
+    if (agents.length > 0) {
+      h += '<div class="card">';
+      h += '<div class="card-header"><div class="card-title">Active Agents</div>';
+      h += '<a class="btn btn-sm btn-secondary" onclick="event.preventDefault();window.location.hash=\'#/agents\'" href="#/agents">View All</a></div>';
+      h += '<div class="agent-cards">';
+      agents.forEach(function(a) {
+        h += '<div class="agent-card">';
+        h += '<div class="agent-card-header">';
+        h += '<div class="agent-card-title">Task #' + a.task_id + '</div>';
+        h += statusBadge(a.status);
+        h += '</div>';
+        h += '<div class="agent-card-meta">';
+        if (a.pid) h += '<div class="meta-row"><span class="label">PID</span><span class="value">' + a.pid + '</span></div>';
+        h += '<div class="meta-row"><span class="label">Started</span><span class="value">' + timeAgo(a.started_at) + '</span></div>';
+        h += '</div></div>';
+      });
+      h += '</div></div>';
+    }
+
+    // Update sidebar badges
+    updateBadges(tasks, agents);
+
+    el.innerHTML = h;
+  }
+
+  // ── Tasks Page ─────────────────────────────────────────────
+
+  async function renderTasks(el) {
+    var tasks = await apiFetch('/tasks');
+    if (!tasks) tasks = [];
+    state.tasks = tasks;
+
+    var h = '';
+
+    // Toolbar
+    h += '<div class="toolbar">';
+    h += '<select id="taskStatusFilter" onchange="window.__filterTasks()">';
+    h += '<option value="">All Statuses</option>';
+    h += '<option value="queued">Queued</option>';
+    h += '<option value="in_progress">In Progress</option>';
+    h += '<option value="waiting_for_input">Waiting for Input</option>';
+    h += '<option value="in_review">In Review</option>';
+    h += '<option value="done">Done</option>';
+    h += '<option value="failed">Failed</option>';
+    h += '<option value="cancelled">Cancelled</option>';
+    h += '</select>';
+    h += '<button class="btn btn-sm btn-secondary" onclick="window.location.hash=\'#/tasks\'">Refresh</button>';
+    h += '<span class="refresh-indicator">' + tasks.length + ' tasks</span>';
+    h += '</div>';
+
+    // Table
+    h += '<div class="card">';
+    if (tasks.length === 0) {
+      h += '<div class="empty-state"><div class="icon">&#x1F4CB;</div><h3>No tasks</h3><p>Tasks will appear here when created via API or Plane webhook.</p></div>';
+    } else {
+      h += '<table class="data-table" id="tasksTable"><thead><tr>';
+      h += '<th>ID</th><th>Title</th><th>Status</th><th>Agent</th><th>Created</th>';
+      h += '</tr></thead><tbody>';
+      tasks.forEach(function(t) {
+        h += '<tr onclick="window.location.hash=\'#/tasks/' + t.id + '\'" data-status="' + esc(t.status) + '">';
+        h += '<td class="id-col">#' + t.id + '</td>';
+        h += '<td class="title-col">' + esc(t.title) + '</td>';
+        h += '<td>' + statusBadge(t.status) + '</td>';
+        h += '<td class="time-col">' + esc(t.agent_type || 'default') + '</td>';
+        h += '<td class="time-col">' + timeAgo(t.created_at) + '</td>';
+        h += '</tr>';
+      });
+      h += '</tbody></table>';
+    }
+    h += '</div>';
+
+    updateBadges(tasks, state.agents);
+    el.innerHTML = h;
+  }
+
+  window.__filterTasks = function() {
+    var filter = document.getElementById('taskStatusFilter').value;
+    var rows = document.querySelectorAll('#tasksTable tbody tr');
+    rows.forEach(function(row) {
+      if (!filter || row.getAttribute('data-status') === filter) {
+        row.style.display = '';
+      } else {
+        row.style.display = 'none';
+      }
+    });
+  };
+
+  // ── Task Detail Page ───────────────────────────────────────
+
+  async function renderTaskDetail(el, taskId) {
+    var task = await apiFetch('/tasks/' + taskId);
+    if (!task) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">&#x26A0;</div><h3>Task not found</h3><p>Task #' + esc(taskId) + ' does not exist.</p></div>';
+      return;
+    }
+
+    var h = '';
+
+    // Back link
+    h += '<a class="back-link" onclick="window.location.hash=\'#/tasks\'">&#x2190; Back to Tasks</a>';
+
+    // Header
+    h += '<div class="detail-header"><div>';
+    h += '<div class="detail-title">' + esc(task.title) + '</div>';
+    h += '<div class="detail-meta">';
+    h += '<span class="meta-item"><span class="label">ID:</span> #' + task.id + '</span>';
+    h += statusBadge(task.status);
+    if (task.agent_type) h += '<span class="meta-item"><span class="label">Agent:</span> ' + esc(task.agent_type) + '</span>';
+    h += '</div></div>';
+    h += '<div class="detail-actions">';
+    if (task.status === 'queued') {
+      h += '<button class="btn btn-primary btn-sm" onclick="window.__runTask(' + task.id + ')">Run</button>';
+    }
+    if (task.status === 'in_progress') {
+      h += '<button class="btn btn-danger btn-sm" onclick="window.__cancelTask(' + task.id + ')">Cancel</button>';
+    }
+    if (task.status === 'waiting_for_input') {
+      h += '<button class="btn btn-primary btn-sm" onclick="window.__resumeTask(' + task.id + ')">Resume</button>';
+    }
+    h += '</div></div>';
+
+    // Description
+    if (task.description) {
+      h += '<div class="detail-section">';
+      h += '<div class="detail-section-title">Description</div>';
+      h += '<div class="detail-description">' + esc(task.description) + '</div>';
+      h += '</div>';
+    }
+
+    // Info grid
+    h += '<div class="detail-section">';
+    h += '<div class="detail-section-title">Details</div>';
+    h += '<div class="detail-grid">';
+    h += '<div class="detail-field"><div class="label">Repository</div><div class="value">' + esc(task.repo || '-') + '</div></div>';
+    h += '<div class="detail-field"><div class="label">Branch</div><div class="value">' + esc(task.branch_name || '-') + '</div></div>';
+    if (task.pr_url) {
+      h += '<div class="detail-field"><div class="label">Pull Request</div><div class="value"><a href="' + esc(task.pr_url) + '" target="_blank">' + esc(task.pr_url) + '</a></div></div>';
+    }
+    if (task.preview_url) {
+      h += '<div class="detail-field"><div class="label">Preview URL</div><div class="value"><a href="' + esc(task.preview_url) + '" target="_blank">' + esc(task.preview_url) + '</a></div></div>';
+    }
+    h += '<div class="detail-field"><div class="label">Created</div><div class="value">' + formatDate(task.created_at) + '</div></div>';
+    if (task.started_at) h += '<div class="detail-field"><div class="label">Started</div><div class="value">' + formatDate(task.started_at) + '</div></div>';
+    if (task.completed_at) h += '<div class="detail-field"><div class="label">Completed</div><div class="value">' + formatDate(task.completed_at) + '</div></div>';
+    h += '</div></div>';
+
+    // Error
+    if (task.error) {
+      h += '<div class="detail-section">';
+      h += '<div class="detail-section-title" style="color:var(--red)">Error</div>';
+      h += '<div class="log-entry" style="color:var(--red)">' + esc(task.error) + '</div>';
+      h += '</div>';
+    }
+
+    el.innerHTML = h;
+  }
+
+  window.__runTask = async function(id) {
+    await apiPost('/tasks/' + id + '/run', {});
+    navigate('tasks', id);
+  };
+
+  window.__cancelTask = async function(id) {
+    await apiPost('/tasks/' + id + '/cancel', {});
+    navigate('tasks', id);
+  };
+
+  window.__resumeTask = async function(id) {
+    var response = prompt('Enter response for the agent:');
+    if (response) {
+      await apiPost('/tasks/' + id + '/resume', { response: response });
+      navigate('tasks', id);
+    }
+  };
+
+  // ── Agents Page ────────────────────────────────────────────
+
+  async function renderAgents(el) {
+    var agents = await apiFetch('/agents');
+    if (!agents) agents = [];
+    state.agents = agents;
+
+    var h = '';
+
+    h += '<div class="toolbar">';
+    h += '<button class="btn btn-sm btn-secondary" onclick="window.location.hash=\'#/agents\'">Refresh</button>';
+    h += '<span class="refresh-indicator">' + agents.length + ' active agent' + (agents.length !== 1 ? 's' : '') + '</span>';
+    h += '</div>';
+
+    if (agents.length === 0) {
+      h += '<div class="empty-state"><div class="icon">&#x1F916;</div><h3>No active agents</h3><p>Agents will appear here when tasks are running.</p></div>';
+    } else {
+      h += '<div class="agent-cards">';
+      agents.forEach(function(a) {
+        h += '<div class="agent-card">';
+        h += '<div class="agent-card-header">';
+        h += '<div class="agent-card-title">';
+        h += (a.task_title || 'Task #' + a.task_id);
+        h += '</div>';
+        h += statusBadge(a.status);
+        h += '</div>';
+        h += '<div class="agent-card-meta">';
+        h += '<div class="meta-row"><span class="label">Task ID</span><span class="value"><a style="color:var(--accent);cursor:pointer" onclick="window.location.hash=\'#/tasks/' + a.task_id + '\'">#' + a.task_id + '</a></span></div>';
+        if (a.agent_type) h += '<div class="meta-row"><span class="label">Type</span><span class="value">' + esc(a.agent_type) + '</span></div>';
+        if (a.repo) h += '<div class="meta-row"><span class="label">Repo</span><span class="value">' + esc(a.repo) + '</span></div>';
+        if (a.pid) h += '<div class="meta-row"><span class="label">PID</span><span class="value">' + a.pid + '</span></div>';
+        h += '<div class="meta-row"><span class="label">Started</span><span class="value">' + timeAgo(a.started_at) + '</span></div>';
+        h += '</div></div>';
+      });
+      h += '</div>';
+    }
+
+    el.innerHTML = h;
+  }
+
+  // ── Preview Page ───────────────────────────────────────────
+
+  async function renderPreview(el) {
+    // Previews are tasks with preview_url set
+    var tasks = await apiFetch('/tasks');
+    if (!tasks) tasks = [];
+
+    var previews = tasks.filter(function(t) { return t.preview_url; });
+
+    var h = '';
+
+    h += '<div class="toolbar">';
+    h += '<button class="btn btn-sm btn-secondary" onclick="window.location.hash=\'#/preview\'">Refresh</button>';
+    h += '<span class="refresh-indicator">' + previews.length + ' preview environment' + (previews.length !== 1 ? 's' : '') + '</span>';
+    h += '</div>';
+
+    if (previews.length === 0) {
+      h += '<div class="empty-state"><div class="icon">&#x1F310;</div><h3>No preview environments</h3><p>Preview URLs will appear here when tasks deploy preview environments.</p></div>';
+    } else {
+      h += '<div class="preview-grid">';
+      previews.forEach(function(t) {
+        h += '<div class="preview-card">';
+        h += '<div class="preview-card-header">';
+        h += '<div><div class="agent-card-title">' + esc(t.title) + '</div>';
+        h += '<div style="margin-top:4px">' + statusBadge(t.status) + '</div></div>';
+        h += '</div>';
+        h += '<a class="preview-url" href="' + esc(t.preview_url) + '" target="_blank">' + esc(t.preview_url) + '</a>';
+        h += '<div class="agent-card-meta" style="margin-top:12px">';
+        h += '<div class="meta-row"><span class="label">Task</span><span class="value"><a style="color:var(--accent);cursor:pointer" onclick="window.location.hash=\'#/tasks/' + t.id + '\'">#' + t.id + '</a></span></div>';
+        if (t.pr_url) h += '<div class="meta-row"><span class="label">PR</span><span class="value"><a style="color:var(--accent)" href="' + esc(t.pr_url) + '" target="_blank">View PR</a></span></div>';
+        h += '<div class="meta-row"><span class="label">Created</span><span class="value">' + timeAgo(t.created_at) + '</span></div>';
+        h += '</div></div>';
+      });
+      h += '</div>';
+    }
+
+    el.innerHTML = h;
+  }
+
+  // ── Analytics Page ─────────────────────────────────────────
+
+  async function renderAnalytics(el) {
+    var tasks = await apiFetch('/tasks');
+    if (!tasks) tasks = [];
+
+    var total = tasks.length;
+    var done = tasks.filter(function(t) { return t.status === 'done'; }).length;
+    var failed = tasks.filter(function(t) { return t.status === 'failed'; }).length;
+    var cancelled = tasks.filter(function(t) { return t.status === 'cancelled'; }).length;
+    var successRate = total > 0 ? Math.round((done / total) * 100) : 0;
+
+    // Calculate average duration for completed tasks
+    var durations = tasks.filter(function(t) {
+      return t.status === 'done' && t.started_at && t.completed_at;
+    }).map(function(t) {
+      return new Date(t.completed_at) - new Date(t.started_at);
+    });
+    var avgDuration = durations.length > 0
+      ? Math.round(durations.reduce(function(a, b) { return a + b; }, 0) / durations.length / 60000)
+      : 0;
+
+    var h = '';
+
+    // Summary stats
+    h += '<div class="stat-grid">';
+    h += '<div class="stat-card"><div class="stat-label">Total Tasks</div><div class="stat-value">' + total + '</div></div>';
+    h += '<div class="stat-card"><div class="stat-label">Success Rate</div><div class="stat-value" style="color:var(--green)">' + successRate + '%</div><div class="stat-detail">' + done + ' of ' + total + ' tasks</div></div>';
+    h += '<div class="stat-card"><div class="stat-label">Avg Duration</div><div class="stat-value">' + (avgDuration > 0 ? avgDuration + 'm' : '-') + '</div><div class="stat-detail">For completed tasks</div></div>';
+    h += '<div class="stat-card"><div class="stat-label">Failure Rate</div><div class="stat-value" style="color:var(--red)">' + (total > 0 ? Math.round((failed / total) * 100) : 0) + '%</div><div class="stat-detail">' + failed + ' failed, ' + cancelled + ' cancelled</div></div>';
+    h += '</div>';
+
+    // Status breakdown
+    h += '<div class="analytics-grid">';
+    h += '<div class="card">';
+    h += '<div class="card-header"><div class="card-title">Status Breakdown</div></div>';
+    var statuses = {};
+    tasks.forEach(function(t) { statuses[t.status] = (statuses[t.status] || 0) + 1; });
+    if (Object.keys(statuses).length === 0) {
+      h += '<div class="empty-state" style="padding:20px"><p>No data yet</p></div>';
+    } else {
+      h += '<div style="display:flex;flex-direction:column;gap:8px">';
+      var statusOrder = ['done', 'in_progress', 'queued', 'waiting_for_input', 'in_review', 'failed', 'cancelled'];
+      statusOrder.forEach(function(s) {
+        if (!statuses[s]) return;
+        var pct = Math.round((statuses[s] / total) * 100);
+        h += '<div style="display:flex;align-items:center;gap:10px">';
+        h += '<div style="width:120px">' + statusBadge(s) + '</div>';
+        h += '<div style="flex:1;background:var(--surface2);border-radius:4px;height:20px;overflow:hidden">';
+        h += '<div style="height:100%;width:' + pct + '%;background:var(--accent);border-radius:4px;transition:width 0.3s"></div>';
+        h += '</div>';
+        h += '<div style="width:60px;text-align:right;font-size:13px;color:var(--text-dim)">' + statuses[s] + ' (' + pct + '%)</div>';
+        h += '</div>';
+      });
+      h += '</div>';
+    }
+    h += '</div>';
+
+    // Recent activity
+    h += '<div class="card">';
+    h += '<div class="card-header"><div class="card-title">Recent Activity</div></div>';
+    var sorted = tasks.slice().sort(function(a, b) {
+      return new Date(b.created_at) - new Date(a.created_at);
+    }).slice(0, 10);
+    if (sorted.length === 0) {
+      h += '<div class="empty-state" style="padding:20px"><p>No activity yet</p></div>';
+    } else {
+      h += '<div class="log-entries">';
+      sorted.forEach(function(t) {
+        h += '<div class="log-entry">';
+        h += '<span class="log-time">' + timeAgo(t.created_at) + '</span>';
+        h += '#' + t.id + ' ' + esc(t.title) + ' - ' + esc(t.status);
+        h += '</div>';
+      });
+      h += '</div>';
+    }
+    h += '</div>';
+
+    h += '</div>';
+
+    el.innerHTML = h;
+  }
+
+  // ── Badges & Health ────────────────────────────────────────
+
+  function updateBadges(tasks, agents) {
+    var badge;
+    if (tasks) {
+      badge = document.getElementById('badgeTasks');
+      if (badge) badge.textContent = tasks.length;
+    }
+    if (agents) {
+      badge = document.getElementById('badgeAgents');
+      if (badge) badge.textContent = agents.length;
+    }
+  }
+
+  async function checkHealth() {
+    try {
+      var r = await fetch('/health');
+      state.healthy = r.ok;
+    } catch (e) {
+      state.healthy = false;
+    }
+    var dot = document.getElementById('healthDot');
+    var text = document.getElementById('healthText');
+    if (dot) {
+      if (state.healthy) {
+        dot.classList.add('healthy');
+        text.textContent = 'System healthy';
+      } else {
+        dot.classList.remove('healthy');
+        text.textContent = 'Unreachable';
+      }
+    }
+  }
+
+  // ── Sidebar Toggle ─────────────────────────────────────────
+
+  window.__toggleSidebar = function() {
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebarOverlay');
+    state.sidebarOpen = !state.sidebarOpen;
+    if (state.sidebarOpen) {
+      sidebar.classList.add('open');
+      overlay.classList.add('open');
+    } else {
+      sidebar.classList.remove('open');
+      overlay.classList.remove('open');
+    }
+  };
+
+  window.__closeSidebar = function() {
+    state.sidebarOpen = false;
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarOverlay').classList.remove('open');
+  };
+
+  // ── Init ───────────────────────────────────────────────────
+
+  window.addEventListener('hashchange', function() {
+    window.__closeSidebar();
+    handleRoute();
+  });
+
+  // Initial load
+  checkHealth();
+  handleRoute();
+
+  // Periodic health check
+  setInterval(checkHealth, 30000);
+})();
