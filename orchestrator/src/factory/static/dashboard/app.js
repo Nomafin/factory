@@ -3,6 +3,8 @@
   'use strict';
 
   var API = '/api';
+  var POLL_INTERVAL = 10000; // 10 seconds
+  var _pollTimer = null;
   var state = {
     currentPage: 'dashboard',
     tasks: [],
@@ -15,7 +17,8 @@
     taskDetail: null,
     taskLogs: [],
     user: null,
-    oauthEnabled: false
+    oauthEnabled: false,
+    settings: null
   };
 
   // ── Utilities ──────────────────────────────────────────────
@@ -69,6 +72,65 @@
     } catch (e) {
       console.error('API error:', path, e);
       return null;
+    }
+  }
+
+  // ── Settings ─────────────────────────────────────────────────
+
+  async function loadSettings() {
+    var data = await apiFetch('/settings');
+    if (data) state.settings = data;
+  }
+
+  function planeIssueUrl(issueId) {
+    if (!issueId || !state.settings) return '';
+    var s = state.settings;
+    if (!s.plane_base_url || !s.plane_workspace_slug || !s.plane_project_id) return '';
+    return s.plane_base_url + '/' + s.plane_workspace_slug + '/projects/' + s.plane_project_id + '/issues/' + issueId;
+  }
+
+  // ── Auto-refresh Polling ────────────────────────────────────
+
+  function startPolling() {
+    stopPolling();
+    _pollTimer = setInterval(function() {
+      refreshCurrentPage();
+    }, POLL_INTERVAL);
+  }
+
+  function stopPolling() {
+    if (_pollTimer) {
+      clearInterval(_pollTimer);
+      _pollTimer = null;
+    }
+  }
+
+  async function refreshCurrentPage() {
+    var route = parseRoute();
+    var content = document.getElementById('pageContent');
+    if (!content) return;
+
+    // Silently refresh without showing loading spinner
+    switch (route.page) {
+      case 'dashboard':
+        await renderDashboard(content);
+        break;
+      case 'tasks':
+        if (route.param) {
+          await renderTaskDetail(content, route.param);
+        } else {
+          await renderTasks(content);
+        }
+        break;
+      case 'agents':
+        await renderAgents(content);
+        break;
+      case 'preview':
+        await renderPreview(content);
+        break;
+      case 'analytics':
+        await renderAnalytics(content);
+        break;
     }
   }
 
@@ -130,6 +192,9 @@
     content.classList.remove('page-enter');
     void content.offsetWidth;
     content.classList.add('page-enter');
+
+    // Start auto-refresh polling
+    startPolling();
   }
 
   function updateNav() {
@@ -227,26 +292,38 @@
   // ── Tasks Page ─────────────────────────────────────────────
 
   async function renderTasks(el) {
+    // Preserve current filter selection during refresh
+    var currentFilter = '';
+    var filterEl = document.getElementById('taskStatusFilter');
+    if (filterEl) currentFilter = filterEl.value;
+
     var tasks = await apiFetch('/tasks');
     if (!tasks) tasks = [];
     state.tasks = tasks;
+
+    // Count visible tasks (matching filter)
+    var visibleCount = tasks.length;
+    if (currentFilter) {
+      visibleCount = tasks.filter(function(t) { return t.status === currentFilter; }).length;
+    }
 
     var h = '';
 
     // Toolbar
     h += '<div class="toolbar">';
     h += '<select id="taskStatusFilter" onchange="window.__filterTasks()">';
-    h += '<option value="">All Statuses</option>';
-    h += '<option value="queued">Queued</option>';
-    h += '<option value="in_progress">In Progress</option>';
-    h += '<option value="waiting_for_input">Waiting for Input</option>';
-    h += '<option value="in_review">In Review</option>';
-    h += '<option value="done">Done</option>';
-    h += '<option value="failed">Failed</option>';
-    h += '<option value="cancelled">Cancelled</option>';
+    h += '<option value=""' + (!currentFilter ? ' selected' : '') + '>All Statuses</option>';
+    h += '<option value="queued"' + (currentFilter === 'queued' ? ' selected' : '') + '>Queued</option>';
+    h += '<option value="in_progress"' + (currentFilter === 'in_progress' ? ' selected' : '') + '>In Progress</option>';
+    h += '<option value="waiting_for_input"' + (currentFilter === 'waiting_for_input' ? ' selected' : '') + '>Waiting for Input</option>';
+    h += '<option value="in_review"' + (currentFilter === 'in_review' ? ' selected' : '') + '>In Review</option>';
+    h += '<option value="done"' + (currentFilter === 'done' ? ' selected' : '') + '>Done</option>';
+    h += '<option value="failed"' + (currentFilter === 'failed' ? ' selected' : '') + '>Failed</option>';
+    h += '<option value="cancelled"' + (currentFilter === 'cancelled' ? ' selected' : '') + '>Cancelled</option>';
     h += '</select>';
     h += '<button class="btn btn-sm btn-secondary" onclick="window.location.hash=\'#/tasks\'">Refresh</button>';
-    h += '<span class="refresh-indicator">' + tasks.length + ' tasks</span>';
+    h += '<span class="refresh-indicator" id="taskCount">' + visibleCount + ' of ' + tasks.length + ' tasks</span>';
+    h += '<span class="auto-refresh-dot" title="Auto-refreshing every 10s"></span>';
     h += '</div>';
 
     // Table
@@ -258,7 +335,8 @@
       h += '<th>ID</th><th>Title</th><th>Status</th><th>Agent</th><th>Created</th>';
       h += '</tr></thead><tbody>';
       tasks.forEach(function(t) {
-        h += '<tr onclick="window.location.hash=\'#/tasks/' + t.id + '\'" data-status="' + esc(t.status) + '">';
+        var hidden = currentFilter && t.status !== currentFilter;
+        h += '<tr onclick="window.location.hash=\'#/tasks/' + t.id + '\'" data-status="' + esc(t.status) + '"' + (hidden ? ' style="display:none"' : '') + '>';
         h += '<td class="id-col">#' + t.id + '</td>';
         h += '<td class="title-col">' + esc(t.title) + '</td>';
         h += '<td>' + statusBadge(t.status) + '</td>';
@@ -277,13 +355,17 @@
   window.__filterTasks = function() {
     var filter = document.getElementById('taskStatusFilter').value;
     var rows = document.querySelectorAll('#tasksTable tbody tr');
+    var visible = 0;
     rows.forEach(function(row) {
       if (!filter || row.getAttribute('data-status') === filter) {
         row.style.display = '';
+        visible++;
       } else {
         row.style.display = 'none';
       }
     });
+    var countEl = document.getElementById('taskCount');
+    if (countEl) countEl.textContent = visible + ' of ' + rows.length + ' tasks';
   };
 
   // ── Task Detail Page ───────────────────────────────────────
@@ -295,6 +377,7 @@
       return;
     }
 
+    state.taskDetail = task;
     var h = '';
 
     // Back link
@@ -307,6 +390,7 @@
     h += '<span class="meta-item"><span class="label">ID:</span> #' + task.id + '</span>';
     h += statusBadge(task.status);
     if (task.agent_type) h += '<span class="meta-item"><span class="label">Agent:</span> ' + esc(task.agent_type) + '</span>';
+    h += '<span class="auto-refresh-dot" title="Auto-refreshing every 10s"></span>';
     h += '</div></div>';
     h += '<div class="detail-actions">';
     if (task.status === 'queued') {
@@ -340,10 +424,79 @@
     if (task.preview_url) {
       h += '<div class="detail-field"><div class="label">Preview URL</div><div class="value"><a href="' + esc(task.preview_url) + '" target="_blank">' + esc(task.preview_url) + '</a></div></div>';
     }
+
+    // Plane issue link
+    var issueUrl = planeIssueUrl(task.plane_issue_id);
+    if (task.plane_issue_id) {
+      h += '<div class="detail-field"><div class="label">Plane Issue</div><div class="value">';
+      if (issueUrl) {
+        h += '<a href="' + esc(issueUrl) + '" target="_blank">' + esc(task.plane_issue_id) + '</a>';
+      } else {
+        h += esc(task.plane_issue_id);
+      }
+      h += '</div></div>';
+    }
+
+    // Workflow link
+    if (task.workflow_id) {
+      h += '<div class="detail-field"><div class="label">Workflow</div><div class="value">';
+      h += 'Workflow #' + task.workflow_id;
+      if (task.workflow_step !== null && task.workflow_step !== undefined) {
+        h += ' (step ' + task.workflow_step + ')';
+      }
+      h += '</div></div>';
+    }
+
     h += '<div class="detail-field"><div class="label">Created</div><div class="value">' + formatDate(task.created_at) + '</div></div>';
     if (task.started_at) h += '<div class="detail-field"><div class="label">Started</div><div class="value">' + formatDate(task.started_at) + '</div></div>';
     if (task.completed_at) h += '<div class="detail-field"><div class="label">Completed</div><div class="value">' + formatDate(task.completed_at) + '</div></div>';
     h += '</div></div>';
+
+    // Clarification history
+    if (task.clarification_context) {
+      var context = null;
+      try { context = JSON.parse(task.clarification_context); } catch (e) { /* ignore */ }
+      if (context) {
+        var history = context.history || [];
+        var pending = context.pending_question || '';
+
+        if (history.length > 0 || pending) {
+          h += '<div class="detail-section">';
+          h += '<div class="detail-section-title">Clarification History</div>';
+          h += '<div class="clarification-list">';
+
+          history.forEach(function(entry, idx) {
+            h += '<div class="clarification-entry">';
+            h += '<div class="clarification-question">';
+            h += '<span class="clarification-icon">&#x2753;</span>';
+            h += '<div><div class="clarification-label">Agent asked' + (entry.asked_at ? ' <span class="clarification-time">' + timeAgo(entry.asked_at) + '</span>' : '') + '</div>';
+            h += '<div class="clarification-text">' + esc(entry.question) + '</div></div>';
+            h += '</div>';
+            if (entry.response) {
+              h += '<div class="clarification-response">';
+              h += '<span class="clarification-icon">&#x1F4AC;</span>';
+              h += '<div><div class="clarification-label">User responded' + (entry.responded_at ? ' <span class="clarification-time">' + timeAgo(entry.responded_at) + '</span>' : '') + '</div>';
+              h += '<div class="clarification-text">' + esc(entry.response) + '</div></div>';
+              h += '</div>';
+            }
+            h += '</div>';
+          });
+
+          // Show pending question if any
+          if (pending) {
+            h += '<div class="clarification-entry clarification-pending">';
+            h += '<div class="clarification-question">';
+            h += '<span class="clarification-icon">&#x23F3;</span>';
+            h += '<div><div class="clarification-label">Waiting for response' + (context.asked_at ? ' <span class="clarification-time">' + timeAgo(context.asked_at) + '</span>' : '') + '</div>';
+            h += '<div class="clarification-text">' + esc(pending) + '</div></div>';
+            h += '</div>';
+            h += '</div>';
+          }
+
+          h += '</div></div>';
+        }
+      }
+    }
 
     // Error
     if (task.error) {
@@ -618,10 +771,12 @@
 
   window.addEventListener('hashchange', function() {
     window.__closeSidebar();
+    stopPolling();
     handleRoute();
   });
 
   // Initial load
+  loadSettings();
   checkAuth();
   checkHealth();
   handleRoute();

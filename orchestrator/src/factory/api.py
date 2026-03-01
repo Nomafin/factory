@@ -11,8 +11,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
+from factory.config import Config
 from factory.db import Database
-from factory.deps import get_db, get_orchestrator
+from factory.deps import get_config, get_db, get_orchestrator
 from factory.models import (
     AgentHandoff, AgentInfo, CodeReviewCreate, HandoffCreate,
     Message, MessageCreate, MessageType,
@@ -24,6 +25,17 @@ from factory.plane import parse_webhook_event
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
+
+
+@router.get("/settings")
+async def get_settings(config: Config = Depends(get_config)):
+    """Return public configuration for the dashboard frontend."""
+    plane = config.plane
+    return {
+        "plane_base_url": plane.base_url.rstrip("/") if plane.base_url else "",
+        "plane_workspace_slug": plane.workspace_slug,
+        "plane_project_id": plane.project_id,
+    }
 
 
 @router.post("/tasks", response_model=Task, status_code=201)
