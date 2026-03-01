@@ -72,6 +72,17 @@ class MessageBoardConfig(BaseModel):
     forward_types: list[str] = ["error", "question", "handoff"]  # which types to forward
 
 
+class OAuthConfig(BaseModel):
+    client_id: str = ""
+    client_secret: str = ""
+    redirect_uri: str = ""
+    authorize_url: str = "https://api.plane.so/auth/o/authorize-app/"
+    token_url: str = "https://api.plane.so/auth/o/token/"
+    userinfo_url: str = "https://api.plane.so/api/v1/users/me/"
+    scopes: str = "read write"
+    session_secret: str = ""  # Secret key for signing session cookies
+
+
 class Config(BaseModel):
     max_concurrent_agents: int = 3
     agent_timeout_minutes: int = 60  # Total max runtime for an agent
@@ -84,6 +95,7 @@ class Config(BaseModel):
     surrealdb: SurrealDBConfig = SurrealDBConfig()
     workflows: dict[str, WorkflowConfig] = {}
     message_board: MessageBoardConfig = MessageBoardConfig()
+    oauth: OAuthConfig = OAuthConfig()
 
 
 def load_config(path: Path) -> Config:

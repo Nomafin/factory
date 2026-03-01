@@ -13,7 +13,9 @@
     sidebarOpen: false,
     loading: false,
     taskDetail: null,
-    taskLogs: []
+    taskLogs: [],
+    user: null,
+    oauthEnabled: false
   };
 
   // ── Utilities ──────────────────────────────────────────────
@@ -589,6 +591,29 @@
     document.getElementById('sidebarOverlay').classList.remove('open');
   };
 
+  // ── Auth ───────────────────────────────────────────────────
+
+  async function checkAuth() {
+    try {
+      var r = await fetch('/auth/status');
+      if (!r.ok) return;
+      var data = await r.json();
+      state.oauthEnabled = data.oauth_enabled;
+      if (data.authenticated && data.user) {
+        state.user = data.user;
+        var userMenu = document.getElementById('userMenu');
+        var userName = document.getElementById('userName');
+        if (userMenu && userName) {
+          var name = data.user.display_name || data.user.email || 'User';
+          userName.textContent = name;
+          userMenu.style.display = 'flex';
+        }
+      }
+    } catch (e) {
+      // Auth status check failed silently
+    }
+  }
+
   // ── Init ───────────────────────────────────────────────────
 
   window.addEventListener('hashchange', function() {
@@ -597,6 +622,7 @@
   });
 
   // Initial load
+  checkAuth();
   checkHealth();
   handleRoute();
 

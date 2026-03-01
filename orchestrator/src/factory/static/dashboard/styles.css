@@ -202,3 +202,6 @@ body {
 
 .back-link { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-dim); text-decoration: none; cursor: pointer; margin-bottom: 16px; transition: color 0.15s; }
 .back-link:hover { color: var(--accent); }
+
+.user-menu { display: flex; align-items: center; gap: 10px; }
+.user-name { font-size: 13px; color: var(--text-dim); font-weight: 500; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

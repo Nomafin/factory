@@ -9,6 +9,7 @@ from factory.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 
+_config: Config | None = None
 _db: Database | None = None
 _orchestrator: Orchestrator | None = None
 _memory: AgentMemory | None = None
@@ -32,9 +33,10 @@ async def _init_memory() -> AgentMemory | None:
 
 
 async def init_services(config_path: str, db_path: str):
-    global _db, _orchestrator, _memory
+    global _config, _db, _orchestrator, _memory
     config_path = Path(config_path)
     config = load_config(config_path)
+    _config = config
     _db = Database(db_path)
     await _db.initialize()
     _memory = await _init_memory()
@@ -66,3 +68,8 @@ def get_orchestrator() -> Orchestrator:
 
 def get_memory() -> AgentMemory | None:
     return _memory
+
+
+def get_config() -> Config:
+    assert _config is not None, "Config not initialized"
+    return _config
