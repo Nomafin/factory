@@ -494,10 +494,10 @@ async def test_api_messages_default_type_is_info(client):
 # ── Web UI test ────────────────────────────────────────────────────────
 
 
-async def test_messages_page_serves_html(client):
-    resp = await client.get("/messages")
-    assert resp.status_code == 200
-    assert "Agent Message Board" in resp.text
+async def test_messages_page_redirects_to_dashboard(client):
+    resp = await client.get("/messages", follow_redirects=False)
+    assert resp.status_code == 302
+    assert "/#/messages" in resp.headers["location"]
 
 
 # ── Orchestrator integration tests ─────────────────────────────────────

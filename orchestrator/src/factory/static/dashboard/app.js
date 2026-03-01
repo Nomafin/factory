@@ -131,6 +131,9 @@
       case 'analytics':
         await renderAnalytics(content);
         break;
+      case 'messages':
+        // Messages page uses SSE for real-time updates, skip standard polling refresh
+        break;
     }
   }
 
@@ -183,6 +186,10 @@
       case 'analytics':
         pageTitle.textContent = 'Analytics';
         await renderAnalytics(content);
+        break;
+      case 'messages':
+        pageTitle.textContent = 'Messages';
+        await renderMessages(content);
         break;
       default:
         pageTitle.textContent = 'Not Found';
@@ -690,6 +697,226 @@
 
   // ── Analytics Page ─────────────────────────────────────────
 
+  // ── Messages Page ──────────────────────────────────────────
+
+  var _messagesEventSource = null;
+  var _messagesAllMessages = [];
+  var _messagesPollTimer = null;
+  var _msgTypeIcons = { info: '\u2139\uFE0F', question: '\u2753', handoff: '\uD83E\uDD1D', status: '\uD83D\uDCCB', error: '\uD83D\uDEA8' };
+
+  function disconnectMessagesSSE() {
+    if (_messagesEventSource) {
+      _messagesEventSource.close();
+      _messagesEventSource = null;
+    }
+    if (_messagesPollTimer) {
+      clearInterval(_messagesPollTimer);
+      _messagesPollTimer = null;
+    }
+  }
+
+  function connectMessagesSSE() {
+    if (_messagesEventSource) _messagesEventSource.close();
+    _messagesEventSource = new EventSource(API + '/messages/stream/sse');
+    _messagesEventSource.addEventListener('connected', function() {
+      var dot = document.getElementById('msgConnDot');
+      var txt = document.getElementById('msgConnText');
+      if (dot) dot.classList.add('connected');
+      if (txt) txt.textContent = 'Live';
+    });
+    _messagesEventSource.addEventListener('message', function(e) {
+      try {
+        var msg = JSON.parse(e.data);
+        if (passesMessageFilter(msg)) {
+          _messagesAllMessages.unshift(msg);
+          renderMessageList();
+        }
+      } catch (err) { /* ignore parse errors */ }
+    });
+    _messagesEventSource.addEventListener('ping', function() {});
+    _messagesEventSource.onerror = function() {
+      var dot = document.getElementById('msgConnDot');
+      var txt = document.getElementById('msgConnText');
+      if (dot) dot.classList.remove('connected');
+      if (txt) txt.textContent = 'Reconnecting...';
+      setTimeout(function() {
+        if (_messagesEventSource && _messagesEventSource.readyState === EventSource.CLOSED) {
+          connectMessagesSSE();
+        }
+      }, 3000);
+    };
+  }
+
+  function passesMessageFilter(msg) {
+    var type = document.getElementById('msgFilterType');
+    var task = document.getElementById('msgFilterTask');
+    var wf = document.getElementById('msgFilterWorkflow');
+    var sender = document.getElementById('msgFilterSender');
+    var search = document.getElementById('msgFilterSearch');
+    if (type && type.value && msg.message_type !== type.value) return false;
+    if (task && task.value && msg.task_id != task.value) return false;
+    if (wf && wf.value && msg.workflow_id != wf.value) return false;
+    if (sender && sender.value && msg.sender !== sender.value) return false;
+    if (search && search.value && !msg.message.toLowerCase().includes(search.value.toLowerCase())) return false;
+    return true;
+  }
+
+  function renderMessageCard(msg) {
+    var tc = 'msg-type-' + esc(msg.message_type);
+    var icon = _msgTypeIcons[msg.message_type] || '\uD83D\uDCAC';
+    var h = '<div class="message-card" data-id="' + msg.id + '">';
+    if (msg.reply_to) h += '<div class="msg-reply-indicator">\u21A9\uFE0F Reply to #' + msg.reply_to + '</div>';
+    h += '<div class="message-header">';
+    h += '<span class="msg-type-badge ' + tc + '">' + icon + ' ' + esc(msg.message_type) + '</span>';
+    h += '<span class="msg-sender">' + esc(msg.sender) + '</span>';
+    if (msg.recipient) h += '<span class="msg-arrow">\u2192</span><span class="msg-recipient">' + esc(msg.recipient) + '</span>';
+    h += '<div class="msg-meta">';
+    if (msg.task_id) h += '<span class="msg-tag">Task #' + msg.task_id + '</span>';
+    if (msg.workflow_id) h += '<span class="msg-tag">WF #' + msg.workflow_id + '</span>';
+    h += '<span>#' + msg.id + '</span><span>' + timeAgo(msg.created_at) + '</span>';
+    h += '</div></div>';
+    h += '<div class="msg-body">' + esc(msg.message) + '</div></div>';
+    return h;
+  }
+
+  function renderMessageList() {
+    var c = document.getElementById('msgList');
+    if (!c) return;
+    if (_messagesAllMessages.length === 0) {
+      c.innerHTML = '<div class="empty-state"><div class="icon">\uD83D\uDCAC</div><h3>No messages yet</h3><p>Messages from agents will appear here in real-time.</p></div>';
+      return;
+    }
+    c.innerHTML = _messagesAllMessages.map(renderMessageCard).join('');
+  }
+
+  async function loadMessagesData() {
+    var p = new URLSearchParams();
+    var el;
+    el = document.getElementById('msgFilterType'); if (el && el.value) p.set('message_type', el.value);
+    el = document.getElementById('msgFilterTask'); if (el && el.value) p.set('task_id', el.value);
+    el = document.getElementById('msgFilterWorkflow'); if (el && el.value) p.set('workflow_id', el.value);
+    el = document.getElementById('msgFilterSender'); if (el && el.value) p.set('sender', el.value);
+    el = document.getElementById('msgFilterSearch'); if (el && el.value) p.set('search', el.value);
+    try {
+      var r = await fetch(API + '/messages?' + p);
+      _messagesAllMessages = await r.json();
+      renderMessageList();
+    } catch (e) {
+      var c = document.getElementById('msgList');
+      if (c) c.innerHTML = '<div class="empty-state"><p>Failed to load messages</p></div>';
+    }
+  }
+
+  async function renderMessages(el) {
+    var h = '';
+
+    // Toolbar with filters and connection status
+    h += '<div class="messages-toolbar">';
+    h += '<div class="filter-group"><label>Type</label>';
+    h += '<select id="msgFilterType">';
+    h += '<option value="">All</option>';
+    h += '<option value="info">Info</option>';
+    h += '<option value="question">Question</option>';
+    h += '<option value="handoff">Handoff</option>';
+    h += '<option value="status">Status</option>';
+    h += '<option value="error">Error</option>';
+    h += '</select></div>';
+    h += '<div class="filter-group"><label>Task</label>';
+    h += '<input type="number" id="msgFilterTask" placeholder="Task ID"></div>';
+    h += '<div class="filter-group"><label>Workflow</label>';
+    h += '<input type="number" id="msgFilterWorkflow" placeholder="WF ID"></div>';
+    h += '<div class="filter-group"><label>Sender</label>';
+    h += '<input type="text" id="msgFilterSender" placeholder="e.g. orchestrator"></div>';
+    h += '<div class="filter-group"><label>Search</label>';
+    h += '<input type="text" id="msgFilterSearch" placeholder="Search messages..."></div>';
+    h += '<button class="btn btn-sm btn-primary" onclick="window.__msgApplyFilters()">Filter</button>';
+    h += '<button class="btn btn-sm btn-secondary" onclick="window.__msgClearFilters()">Clear</button>';
+    h += '<div class="messages-connection-status">';
+    h += '<div class="messages-connection-dot" id="msgConnDot"></div>';
+    h += '<span id="msgConnText">Connecting...</span>';
+    h += '</div>';
+    h += '</div>';
+
+    // Messages list
+    h += '<div class="messages-list" id="msgList">';
+    h += '<div class="loading"><div class="spinner"></div> Loading messages...</div>';
+    h += '</div>';
+
+    // Compose area
+    h += '<div class="compose-area">';
+    h += '<form class="compose-form" onsubmit="window.__msgSend(event)">';
+    h += '<div class="input-group"><label>Sender</label>';
+    h += '<input type="text" id="msgComposeSender" placeholder="your-name" required style="width:120px"></div>';
+    h += '<div class="input-group"><label>To (optional)</label>';
+    h += '<input type="text" id="msgComposeRecipient" placeholder="broadcast" style="width:120px"></div>';
+    h += '<div class="input-group"><label>Type</label>';
+    h += '<select id="msgComposeType" style="width:100px">';
+    h += '<option value="info">Info</option>';
+    h += '<option value="question">Question</option>';
+    h += '<option value="handoff">Handoff</option>';
+    h += '<option value="status">Status</option>';
+    h += '<option value="error">Error</option>';
+    h += '</select></div>';
+    h += '<div class="input-group" style="flex:1"><label>Message</label>';
+    h += '<textarea id="msgComposeMessage" placeholder="Type a message..." rows="1" required></textarea></div>';
+    h += '<button type="submit" class="btn btn-primary">Send</button>';
+    h += '</form>';
+    h += '</div>';
+
+    el.innerHTML = h;
+
+    // Setup auto-grow textarea
+    var ta = document.getElementById('msgComposeMessage');
+    if (ta) {
+      ta.addEventListener('input', function() {
+        this.style.height = 'auto';
+        this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+      });
+    }
+
+    // Load messages and connect SSE
+    await loadMessagesData();
+    connectMessagesSSE();
+
+    // Fallback polling every 60s
+    _messagesPollTimer = setInterval(loadMessagesData, 60000);
+  }
+
+  window.__msgApplyFilters = function() { loadMessagesData(); };
+
+  window.__msgClearFilters = function() {
+    ['msgFilterType', 'msgFilterTask', 'msgFilterWorkflow', 'msgFilterSender', 'msgFilterSearch'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+    loadMessagesData();
+  };
+
+  window.__msgSend = async function(e) {
+    e.preventDefault();
+    var sender = document.getElementById('msgComposeSender');
+    var recipient = document.getElementById('msgComposeRecipient');
+    var mt = document.getElementById('msgComposeType');
+    var msg = document.getElementById('msgComposeMessage');
+    if (!sender || !msg) return;
+    var sVal = sender.value.trim();
+    var mVal = msg.value.trim();
+    if (!sVal || !mVal) return;
+    try {
+      var r = await fetch(API + '/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sender: sVal,
+          recipient: recipient ? recipient.value.trim() || null : null,
+          message: mVal,
+          message_type: mt ? mt.value : 'info'
+        })
+      });
+      if (r.ok) msg.value = '';
+    } catch (err) { console.error('Failed to send message:', err); }
+  };
+
   // Track active Chart.js instances so we can destroy them before re-rendering
   var _analyticsCharts = [];
 
@@ -1141,6 +1368,7 @@
   window.addEventListener('hashchange', function() {
     window.__closeSidebar();
     stopPolling();
+    disconnectMessagesSSE();
     handleRoute();
   });
 
