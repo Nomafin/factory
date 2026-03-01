@@ -112,12 +112,11 @@ class TestDashboardRoutes:
         assert r.status_code == 200
         assert "Factory Dashboard" in r.text
 
-    def test_messages_route(self, client):
-        """GET /messages should still serve the message board."""
-        r = client.get("/messages")
-        assert r.status_code == 200
-        assert "text/html" in r.headers["content-type"]
-        assert "Agent Message Board" in r.text
+    def test_messages_route_redirects_to_dashboard(self, client):
+        """GET /messages should redirect to dashboard messages tab."""
+        r = client.get("/messages", follow_redirects=False)
+        assert r.status_code == 302
+        assert "/#/messages" in r.headers["location"]
 
     def test_health_endpoint(self, client):
         """GET /health should return JSON status."""
@@ -155,6 +154,7 @@ class TestDashboardContent:
         assert "#/agents" in r.text
         assert "#/preview" in r.text
         assert "#/analytics" in r.text
+        assert "#/messages" in r.text
 
     def test_html_has_main_content_area(self, client):
         """Dashboard should contain main content area."""
@@ -216,6 +216,7 @@ class TestDashboardContent:
         assert "renderAgents" in r.text
         assert "renderPreview" in r.text
         assert "renderAnalytics" in r.text
+        assert "renderMessages" in r.text
 
 
 class TestDashboardFiles:
@@ -713,3 +714,42 @@ class TestDashboardNewFeatures:
         """JS should show filtered task count."""
         r = client.get("/static/dashboard/app.js")
         assert "taskCount" in r.text
+
+    def test_js_has_messages_sse_support(self, client):
+        """JS should have SSE connection for real-time messages."""
+        r = client.get("/static/dashboard/app.js")
+        assert "connectMessagesSSE" in r.text
+        assert "disconnectMessagesSSE" in r.text
+        assert "EventSource" in r.text
+        assert "/messages/stream/sse" in r.text
+
+    def test_js_has_messages_compose(self, client):
+        """JS should have message compose/send functionality."""
+        r = client.get("/static/dashboard/app.js")
+        assert "__msgSend" in r.text
+        assert "msgComposeSender" in r.text
+        assert "msgComposeMessage" in r.text
+
+    def test_js_has_messages_filters(self, client):
+        """JS should have message filtering support."""
+        r = client.get("/static/dashboard/app.js")
+        assert "__msgApplyFilters" in r.text
+        assert "__msgClearFilters" in r.text
+        assert "passesMessageFilter" in r.text
+
+    def test_css_has_messages_styles(self, client):
+        """CSS should have message board styles."""
+        r = client.get("/static/dashboard/styles.css")
+        assert "message-card" in r.text
+        assert "msg-type-badge" in r.text
+        assert "compose-area" in r.text
+        assert "messages-toolbar" in r.text
+        assert "messages-connection-dot" in r.text
+
+    def test_html_has_messages_nav_as_spa_link(self, client):
+        """Messages nav link should be an SPA link, not external."""
+        r = client.get("/")
+        assert 'data-page="messages"' in r.text
+        assert 'href="#/messages"' in r.text
+        # Should NOT have target="_blank" anymore
+        assert 'target="_blank"' not in r.text or 'data-page="messages"' in r.text

@@ -130,10 +130,7 @@ async def analytics_page(factory_session: str | None = Cookie(None)):
 
 @app.get("/messages", response_class=HTMLResponse)
 async def messages_page(factory_session: str | None = Cookie(None)):
-    """Serve the agent message board web UI."""
+    """Redirect /messages to dashboard messages tab."""
     if not _check_auth(factory_session):
         return RedirectResponse(url="/auth/login-page", status_code=302)
-    html_path = STATIC_DIR / "messages.html"
-    if html_path.exists():
-        return HTMLResponse(content=html_path.read_text())
-    return HTMLResponse(content="<h1>Message board not found</h1>", status_code=404)
+    return RedirectResponse(url="/#/messages", status_code=302)
