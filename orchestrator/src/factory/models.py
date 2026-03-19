@@ -40,9 +40,19 @@ class Task(BaseModel):
     clarification_context: str = ""
     workflow_id: int | None = None
     workflow_step: int | None = None
+    last_output: str | None = None
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+
+
+class TaskLog(BaseModel):
+    message: str
+    timestamp: str
+
+
+class TaskLogsResponse(BaseModel):
+    logs: list[TaskLog]
 
 
 class AgentInfo(BaseModel):
