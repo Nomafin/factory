@@ -9,6 +9,47 @@ from factory.orchestrator import Orchestrator
 
 @patch("factory.orchestrator.RepoManager")
 @patch("factory.orchestrator.AgentRunner")
+async def test_process_task_resolves_unknown_repo(MockRunner, MockRepoMgr):
+    db = Database(":memory:")
+    await db.initialize()
+
+    config = Config(
+        default_org="Nomafin",
+        repos={},  # No pre-configured repos
+        agent_templates={"coder": AgentTemplateConfig(
+            system_prompt_file="prompts/coder.md",
+            allowed_tools=["Read", "Edit", "Bash"],
+        )},
+    )
+
+    mock_repo_mgr = MockRepoMgr.return_value
+    mock_repo_mgr.validate_repo = AsyncMock()
+    mock_repo_mgr.ensure_repo = AsyncMock(return_value=Path("/tmp/repos/myapp"))
+    mock_repo_mgr.create_worktree = AsyncMock(return_value=Path("/tmp/worktrees/test"))
+
+    mock_runner = MockRunner.return_value
+    mock_runner.can_accept_task = True
+    mock_runner.start_agent = AsyncMock(return_value=True)
+
+    orch = Orchestrator(db=db, config=config)
+    orch.repo_manager = mock_repo_mgr
+    orch.runner = mock_runner
+
+    task = await db.create_task(TaskCreate(
+        title="Fix bug", repo="myapp", agent_type="coder"
+    ))
+
+    result = await orch.process_task(task.id)
+
+    assert result is True
+    mock_repo_mgr.validate_repo.assert_awaited_once_with("myapp", "https://github.com/Nomafin/myapp.git")
+    mock_repo_mgr.ensure_repo.assert_awaited_once_with("myapp", "https://github.com/Nomafin/myapp.git")
+
+    await db.close()
+
+
+@patch("factory.orchestrator.RepoManager")
+@patch("factory.orchestrator.AgentRunner")
 async def test_orchestrator_process_task(MockRunner, MockRepoMgr):
     db = Database(":memory:")
     await db.initialize()

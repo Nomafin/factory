@@ -19,7 +19,7 @@ from factory.plane import PlaneClient
 from factory.prompts import load_prompt
 from factory.revision_context import RevisionContext, build_revision_context
 from factory.runner import AgentRunner
-from factory.workspace import RepoManager, cleanup_task_worktree
+from factory.workspace import RepoManager, cleanup_task_worktree, resolve_repo
 
 logger = logging.getLogger(__name__)
 
@@ -357,15 +357,30 @@ class Orchestrator:
             logger.error("Task %d not found", task_id)
             return False
 
-        repo_config = self.config.repos.get(task.repo)
-        if not repo_config:
-            await self.db.update_task_status(task_id, TaskStatus.FAILED, error=f"Unknown repo: {task.repo}")
+        try:
+            repo_url, repo_settings = resolve_repo(
+                task.repo, self.config.repos, self.config.default_org
+            )
+        except ValueError as e:
+            await self.db.update_task_status(task_id, TaskStatus.FAILED, error=str(e))
             await self._update_plane_state(
                 task.plane_issue_id, self.config.plane.states.failed,
-                f"Failed: Unknown repo '{task.repo}'"
+                f"Failed: {e}"
             )
-            await self._notify(f"\u274c Task failed: {task.title}\nUnknown repo: {task.repo}")
+            await self._notify(f"\u274c Task failed: {task.title}\n{e}")
             return False
+
+        if task.repo not in self.config.repos:
+            try:
+                await self.repo_manager.validate_repo(task.repo, repo_url)
+            except ValueError as e:
+                await self.db.update_task_status(task_id, TaskStatus.FAILED, error=str(e))
+                await self._update_plane_state(
+                    task.plane_issue_id, self.config.plane.states.failed,
+                    f"Failed: {e}"
+                )
+                await self._notify(f"\u274c Task failed: {task.title}\n{e}")
+                return False
 
         template = self.config.agent_templates.get(task.agent_type)
         if not template:
@@ -380,7 +395,7 @@ class Orchestrator:
         is_revision, existing_branch, existing_pr_url = await self._detect_revision_task(task)
 
         try:
-            await self.repo_manager.ensure_repo(task.repo, repo_config.url)
+            await self.repo_manager.ensure_repo(task.repo, repo_url)
 
             if is_revision and existing_branch:
                 # Revision task: check out the existing branch
