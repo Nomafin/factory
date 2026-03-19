@@ -68,3 +68,74 @@ async def test_list_tasks_by_status():
     assert in_progress[0].title == "Task 2"
 
     await db.close()
+
+
+async def test_get_last_output():
+    db = Database(":memory:")
+    await db.initialize()
+
+    task = await db.create_task(TaskCreate(title="Task 1", repo="myapp", agent_type="coder"))
+    await db.add_log(task.id, "First output")
+    await db.add_log(task.id, "Second output")
+
+    last = await db.get_last_output(task.id)
+    assert last == "Second output"
+
+    await db.close()
+
+
+async def test_get_last_output_empty():
+    db = Database(":memory:")
+    await db.initialize()
+
+    task = await db.create_task(TaskCreate(title="Task 1", repo="myapp", agent_type="coder"))
+    last = await db.get_last_output(task.id)
+    assert last is None
+
+    await db.close()
+
+
+async def test_get_last_output_truncated():
+    db = Database(":memory:")
+    await db.initialize()
+
+    task = await db.create_task(TaskCreate(title="Task 1", repo="myapp", agent_type="coder"))
+    await db.add_log(task.id, "x" * 1000)
+
+    last = await db.get_last_output(task.id)
+    assert len(last) == 500
+
+    await db.close()
+
+
+async def test_get_logs_with_since():
+    db = Database(":memory:")
+    await db.initialize()
+
+    task = await db.create_task(TaskCreate(title="Task 1", repo="myapp", agent_type="coder"))
+    await db.add_log(task.id, "First output")
+    logs_before = await db.get_logs(task.id)
+    since = logs_before[0]["timestamp"]
+
+    await db.add_log(task.id, "Second output")
+
+    logs = await db.get_logs(task.id, since=since)
+    assert len(logs) == 1
+    assert logs[0]["message"] == "Second output"
+
+    await db.close()
+
+
+async def test_get_logs_with_limit():
+    db = Database(":memory:")
+    await db.initialize()
+
+    task = await db.create_task(TaskCreate(title="Task 1", repo="myapp", agent_type="coder"))
+    for i in range(10):
+        await db.add_log(task.id, f"Output {i}")
+
+    logs = await db.get_logs(task.id, limit=3)
+    assert len(logs) == 3
+    assert logs[0]["message"] == "Output 0"
+
+    await db.close()

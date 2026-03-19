@@ -302,10 +302,27 @@ class Database:
         )
         await self._db.commit()
 
-    async def get_logs(self, task_id: int) -> list[dict]:
+    async def get_last_output(self, task_id: int) -> str | None:
         cursor = await self._db.execute(
-            "SELECT message, timestamp FROM task_logs WHERE task_id = ? ORDER BY timestamp", (task_id,)
+            "SELECT message FROM task_logs WHERE task_id = ? ORDER BY timestamp DESC LIMIT 1",
+            (task_id,),
         )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return row["message"][:500]
+
+    async def get_logs(self, task_id: int, since: str | None = None, limit: int = 50) -> list[dict]:
+        if since:
+            cursor = await self._db.execute(
+                "SELECT message, timestamp FROM task_logs WHERE task_id = ? AND timestamp > ? ORDER BY timestamp LIMIT ?",
+                (task_id, since, limit),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT message, timestamp FROM task_logs WHERE task_id = ? ORDER BY timestamp LIMIT ?",
+                (task_id, limit),
+            )
         rows = await cursor.fetchall()
         return [{"message": row["message"], "timestamp": row["timestamp"]} for row in rows]
 
