@@ -19,7 +19,7 @@ from factory.docker_toolkit import PREVIEW_DOMAIN
 from factory.models import (
     AgentHandoff, AgentInfo, CodeReviewCreate, HandoffCreate,
     Message, MessageCreate, MessageType,
-    Task, TaskCreate, TaskStatus, Workflow, WorkflowCreate, WorkflowStatus,
+    Task, TaskCreate, TaskLogsResponse, TaskStatus, Workflow, WorkflowCreate, WorkflowStatus,
 )
 from factory.orchestrator import Orchestrator
 from factory.plane import parse_webhook_event
@@ -74,9 +74,15 @@ async def create_task(
     return task
 
 
+async def _enrich_task(task: Task, db: Database) -> Task:
+    task.last_output = await db.get_last_output(task.id)
+    return task
+
+
 @router.get("/tasks", response_model=list[Task])
 async def list_tasks(status: TaskStatus | None = None, db: Database = Depends(get_db)):
-    return await db.list_tasks(status=status)
+    tasks = await db.list_tasks(status=status)
+    return [await _enrich_task(t, db) for t in tasks]
 
 
 @router.get("/tasks/{task_id}", response_model=Task)
@@ -84,7 +90,21 @@ async def get_task(task_id: int, db: Database = Depends(get_db)):
     task = await db.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    return task
+    return await _enrich_task(task, db)
+
+
+@router.get("/tasks/{task_id}/logs", response_model=TaskLogsResponse)
+async def get_task_logs(
+    task_id: int,
+    since: str | None = Query(None),
+    limit: int = Query(50),
+    db: Database = Depends(get_db),
+):
+    task = await db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    logs = await db.get_logs(task_id, since=since, limit=limit)
+    return TaskLogsResponse(logs=logs)
 
 
 @router.post("/tasks/{task_id}/run", response_model=Task)
@@ -538,20 +558,24 @@ async def get_analytics(db: Database = Depends(get_db)):
 
 
 @router.get("/agents", response_model=list[AgentInfo])
-async def list_agents(orch: Orchestrator = Depends(get_orchestrator)):
+async def list_agents(
+    orch: Orchestrator = Depends(get_orchestrator),
+    db: Database = Depends(get_db),
+):
     agents = orch.runner.get_running_agents()
-    return [
-        AgentInfo(
+    result = []
+    for a in agents.values():
+        task = await db.get_task(a.task_id)
+        result.append(AgentInfo(
             task_id=a.task_id,
-            task_title="",
-            agent_type="",
-            repo="",
+            task_title=task.title if task else "",
+            agent_type=task.agent_type if task else "",
+            repo=task.repo if task else "",
             status="running",
             started_at=a.started_at,
             pid=a.process.pid if a.process else None,
-        )
-        for a in agents.values()
-    ]
+        ))
+    return result
 
 
 # ── Preview environment endpoints ──────────────────────────────────────
