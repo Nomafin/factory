@@ -182,8 +182,9 @@ Edit `config.yml`:
 max_concurrent_agents: 3
 agent_timeout_minutes: 60        # Kill agent after 60 min total
 agent_activity_timeout_minutes: 15  # Kill agent after 15 min idle
+default_org: "your-github-org"     # Enables auto-discovery (see below)
 
-# Repositories agents can work on
+# Repositories — optional, only needed for custom settings
 repos:
   my-app:
     url: "https://github.com/your-org/my-app.git"
@@ -252,6 +253,16 @@ plane:
     failed: "state-uuid"
     cancelled: "state-uuid"
 ```
+
+### Auto-Discovery Repos
+
+When `default_org` is set, Factory can work with any repo in that GitHub org without pre-registering it. The `repo` field accepts:
+
+- **Short name** (e.g., `"myapp"`) — resolves to `https://github.com/{default_org}/myapp.git`
+- **Full owner/repo** (e.g., `"other-org/myapp"`) — resolves to `https://github.com/other-org/myapp.git`
+- **Config key** (e.g., `"my-app"`) — uses the URL from config.yml repos section
+
+Unknown repos are validated via `git ls-remote` before cloning. Pre-configured repos skip validation and can have custom settings.
 
 ### 4. Set Up SurrealDB (Optional)
 
@@ -361,6 +372,7 @@ server {
 | `GET` | `/api/tasks/{id}` | Get task details |
 | `POST` | `/api/tasks/{id}/run` | Start a queued task |
 | `POST` | `/api/tasks/{id}/cancel` | Cancel a running task |
+| `GET` | `/api/tasks/{id}/logs` | Get task logs (`?since=` and `?limit=`) |
 | `GET` | `/api/tasks/{id}/handoffs` | Get handoffs for a task |
 
 #### Create and Run a Task
