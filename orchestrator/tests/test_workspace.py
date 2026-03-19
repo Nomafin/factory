@@ -1,6 +1,8 @@
 import subprocess
 
-from factory.workspace import RepoManager
+import pytest
+from factory.config import RepoConfig
+from factory.workspace import RepoManager, resolve_repo
 
 
 async def test_clone_repo(tmp_path):
@@ -40,3 +42,34 @@ async def test_clone_repo(tmp_path):
     # Cleanup worktree
     await mgr.remove_worktree("testrepo", wt_path)
     assert not wt_path.exists()
+
+
+def test_resolve_repo_from_config():
+    repos = {"factory": RepoConfig(url="https://github.com/Nomafin/factory.git", default_agent="coder")}
+    url, settings = resolve_repo("factory", repos, "Nomafin")
+    assert url == "https://github.com/Nomafin/factory.git"
+    assert settings.default_agent == "coder"
+
+
+def test_resolve_repo_owner_slash_name():
+    url, settings = resolve_repo("other-org/some-repo", {}, "Nomafin")
+    assert url == "https://github.com/other-org/some-repo.git"
+    assert settings.default_agent == "coder"
+
+
+def test_resolve_repo_short_name_with_default_org():
+    url, settings = resolve_repo("myapp", {}, "Nomafin")
+    assert url == "https://github.com/Nomafin/myapp.git"
+    assert settings.default_agent == "coder"
+
+
+def test_resolve_repo_short_name_no_default_org():
+    with pytest.raises(ValueError, match="Cannot resolve repo"):
+        resolve_repo("myapp", {}, "")
+
+
+def test_resolve_repo_config_overrides_default_org():
+    repos = {"myapp": RepoConfig(url="https://github.com/custom/myapp.git", default_agent="reviewer")}
+    url, settings = resolve_repo("myapp", repos, "Nomafin")
+    assert url == "https://github.com/custom/myapp.git"
+    assert settings.default_agent == "reviewer"

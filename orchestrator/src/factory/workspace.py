@@ -4,13 +4,51 @@ import os
 import shutil
 from pathlib import Path
 
+from factory.config import RepoConfig
+
 logger = logging.getLogger(__name__)
+
+
+def resolve_repo(
+    name: str,
+    config_repos: dict[str, RepoConfig],
+    default_org: str,
+) -> tuple[str, RepoConfig]:
+    """Resolve a repo name to a (url, settings) tuple.
+
+    Resolution order:
+    1. Exact match in config_repos
+    2. owner/repo format -> GitHub URL
+    3. Short name + default_org -> GitHub URL
+    4. Raise ValueError
+    """
+    if name in config_repos:
+        cfg = config_repos[name]
+        return cfg.url, cfg
+
+    defaults = RepoConfig(url="", default_agent="coder")
+
+    if "/" in name:
+        parts = name.split("/", 1)
+        if len(parts) == 2 and parts[0] and parts[1]:
+            url = f"https://github.com/{parts[0]}/{parts[1]}.git"
+            return url, defaults
+
+    if default_org:
+        url = f"https://github.com/{default_org}/{name}.git"
+        return url, defaults
+
+    raise ValueError(
+        f"Cannot resolve repo '{name}': not in config, not owner/repo format, "
+        f"and no default_org configured"
+    )
 
 
 class RepoManager:
     def __init__(self, repos_dir: Path, worktrees_dir: Path):
         self.repos_dir = repos_dir
         self.worktrees_dir = worktrees_dir
+        self._validated_repos: set[str] = set()
 
     def _auth_url(self, url: str) -> str:
         """Inject GitHub token into HTTPS URLs for authentication."""
@@ -30,6 +68,17 @@ class RepoManager:
         if proc.returncode != 0:
             raise RuntimeError(f"Command {args} failed: {stderr.decode()}")
         return stdout.decode().strip()
+
+    async def validate_repo(self, name: str, url: str):
+        """Verify a repo is accessible via git ls-remote. Caches results."""
+        if name in self._validated_repos:
+            return
+        auth_url = self._auth_url(url)
+        try:
+            await self._run("git", "ls-remote", "--exit-code", auth_url)
+            self._validated_repos.add(name)
+        except RuntimeError as e:
+            raise ValueError(f"Repo '{name}' at {url} is not accessible: {e}") from e
 
     async def ensure_repo(self, name: str, url: str) -> Path:
         repo_path = self.repos_dir / name
