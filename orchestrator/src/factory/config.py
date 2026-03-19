@@ -87,6 +87,7 @@ class Config(BaseModel):
     max_concurrent_agents: int = 3
     agent_timeout_minutes: int = 60  # Total max runtime for an agent
     agent_activity_timeout_minutes: int = 15  # Kill if no output for this long
+    default_org: str = ""
     plane: PlaneConfig = PlaneConfig()
     orchestrator: OrchestratorConfig = OrchestratorConfig()
     repos: dict[str, RepoConfig] = {}
