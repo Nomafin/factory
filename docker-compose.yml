@@ -1,0 +1,34 @@
+services:
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    ports:
+      - "${FACTORY_SERVICE_PORT:-3000}"
+    labels:
+      # Factory labels (required for cleanup and identification)
+      - "factory.task-id=${FACTORY_TASK_ID}"
+      - "factory.repo=${FACTORY_REPO}"
+      - "factory.env-type=preview"
+      - "factory.created=${FACTORY_CREATED:-0}"
+      # Traefik labels (required for public URL routing)
+      - "traefik.enable=true"
+      - "traefik.http.routers.app-${FACTORY_TASK_ID:-0}.rule=Host(`${FACTORY_HOSTNAME:-localhost}`)"
+      - "traefik.http.routers.app-${FACTORY_TASK_ID:-0}.entrypoints=web"
+      - "traefik.http.services.app-${FACTORY_TASK_ID:-0}.loadbalancer.server.port=${FACTORY_SERVICE_PORT:-3000}"
+    environment:
+      - NODE_ENV=production
+      - PORT=${FACTORY_SERVICE_PORT:-3000}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${FACTORY_SERVICE_PORT:-3000}/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - default
+      - factory-preview
+
+networks:
+  factory-preview:
+    external: true

@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hello World Greeting App</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      overflow: hidden;
+    }
+
+    /* Floating bubbles background */
+    .bubbles {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .bubble {
+      position: absolute;
+      bottom: -80px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 50%;
+      animation: rise linear infinite;
+    }
+
+    .bubble:nth-child(1) { width: 40px; height: 40px; left: 10%; animation-duration: 8s; animation-delay: 0s; }
+    .bubble:nth-child(2) { width: 20px; height: 20px; left: 20%; animation-duration: 5s; animation-delay: 1s; }
+    .bubble:nth-child(3) { width: 50px; height: 50px; left: 35%; animation-duration: 7s; animation-delay: 2s; }
+    .bubble:nth-child(4) { width: 80px; height: 80px; left: 50%; animation-duration: 11s; animation-delay: 0s; }
+    .bubble:nth-child(5) { width: 35px; height: 35px; left: 55%; animation-duration: 6s; animation-delay: 1s; }
+    .bubble:nth-child(6) { width: 45px; height: 45px; left: 65%; animation-duration: 8s; animation-delay: 3s; }
+    .bubble:nth-child(7) { width: 25px; height: 25px; left: 70%; animation-duration: 7s; animation-delay: 2s; }
+    .bubble:nth-child(8) { width: 60px; height: 60px; left: 80%; animation-duration: 10s; animation-delay: 0s; }
+    .bubble:nth-child(9) { width: 30px; height: 30px; left: 90%; animation-duration: 9s; animation-delay: 1.5s; }
+    .bubble:nth-child(10) { width: 55px; height: 55px; left: 5%; animation-duration: 12s; animation-delay: 0.5s; }
+
+    @keyframes rise {
+      0% {
+        bottom: -80px;
+        transform: translateX(0) scale(1);
+        opacity: 0.4;
+      }
+      50% {
+        opacity: 0.2;
+      }
+      100% {
+        bottom: 110vh;
+        transform: translateX(100px) scale(0.3);
+        opacity: 0;
+      }
+    }
+
+    .container {
+      position: relative;
+      z-index: 1;
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(10px);
+      border-radius: 24px;
+      padding: 48px 40px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(255, 255, 255, 0.2);
+      max-width: 480px;
+      width: 90%;
+      text-align: center;
+      transition: transform 0.3s ease;
+    }
+
+    .container:hover {
+      transform: translateY(-2px);
+    }
+
+    .emoji-icon {
+      font-size: 64px;
+      margin-bottom: 16px;
+      display: block;
+      animation: wave 2s ease-in-out infinite;
+    }
+
+    @keyframes wave {
+      0%, 100% { transform: rotate(0deg); }
+      25% { transform: rotate(20deg); }
+      75% { transform: rotate(-10deg); }
+    }
+
+    h1 {
+      color: #2d3748;
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .subtitle {
+      color: #718096;
+      font-size: 16px;
+      margin-bottom: 32px;
+    }
+
+    .input-group {
+      position: relative;
+      margin-bottom: 24px;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 16px 20px;
+      font-size: 18px;
+      border: 2px solid #e2e8f0;
+      border-radius: 14px;
+      outline: none;
+      transition: all 0.3s ease;
+      background: #f7fafc;
+      color: #2d3748;
+    }
+
+    input[type="text"]:focus {
+      border-color: #667eea;
+      background: #fff;
+      box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.15);
+    }
+
+    input[type="text"]::placeholder {
+      color: #a0aec0;
+    }
+
+    button {
+      width: 100%;
+      padding: 16px 32px;
+      font-size: 18px;
+      font-weight: 600;
+      color: #fff;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border: none;
+      border-radius: 14px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+    }
+
+    button:active {
+      transform: translateY(0);
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    /* Greeting display */
+    .greeting-container {
+      display: none;
+      margin-top: 32px;
+      animation: fadeInUp 0.6s ease;
+    }
+
+    .greeting-container.visible {
+      display: block;
+    }
+
+    @keyframes fadeInUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .greeting-card {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border-radius: 16px;
+      padding: 32px 24px;
+      color: #fff;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .greeting-card::before {
+      content: '';
+      position: absolute;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 60%);
+      animation: shimmer 3s ease-in-out infinite;
+    }
+
+    @keyframes shimmer {
+      0%, 100% { transform: translateX(-30%) translateY(-30%); }
+      50% { transform: translateX(30%) translateY(30%); }
+    }
+
+    .greeting-text {
+      font-size: 24px;
+      font-weight: 700;
+      position: relative;
+      z-index: 1;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+
+    .confetti-emoji {
+      font-size: 32px;
+      display: block;
+      margin-top: 8px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .try-again {
+      margin-top: 16px;
+      background: transparent;
+      color: #667eea;
+      border: 2px solid #667eea;
+      font-size: 14px;
+      padding: 10px 24px;
+    }
+
+    .try-again:hover {
+      background: #667eea;
+      color: #fff;
+    }
+
+    .error-text {
+      color: #e53e3e;
+      font-size: 14px;
+      margin-top: 8px;
+      display: none;
+    }
+
+    .error-text.visible {
+      display: block;
+      animation: fadeInUp 0.3s ease;
+    }
+  </style>
+</head>
+<body>
+  <div class="bubbles">
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+  </div>
+
+  <div class="container">
+    <div id="input-section">
+      <span class="emoji-icon">👋</span>
+      <h1>Hello World!</h1>
+      <p class="subtitle">What's your name? Let me greet you!</p>
+      <div class="input-group">
+        <input
+          type="text"
+          id="nameInput"
+          placeholder="Enter your name..."
+          autocomplete="off"
+          maxlength="50"
+        />
+        <p id="errorText" class="error-text">Please enter your name!</p>
+      </div>
+      <button id="greetBtn" onclick="greetUser()">Say Hello! 🎉</button>
+    </div>
+
+    <div id="greeting-section" class="greeting-container">
+      <div class="greeting-card">
+        <span class="greeting-text" id="greetingText"></span>
+        <span class="confetti-emoji">🎊 🥳 🎊</span>
+      </div>
+      <button class="try-again" onclick="resetForm()">Try Another Name</button>
+    </div>
+  </div>
+
+  <script>
+    const nameInput = document.getElementById('nameInput');
+    const greetBtn = document.getElementById('greetBtn');
+    const errorText = document.getElementById('errorText');
+    const inputSection = document.getElementById('input-section');
+    const greetingSection = document.getElementById('greeting-section');
+    const greetingText = document.getElementById('greetingText');
+
+    // Allow Enter key to submit
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        greetUser();
+      }
+    });
+
+    // Clear error on typing
+    nameInput.addEventListener('input', () => {
+      errorText.classList.remove('visible');
+    });
+
+    async function greetUser() {
+      const name = nameInput.value.trim();
+
+      if (!name) {
+        errorText.classList.add('visible');
+        nameInput.focus();
+        return;
+      }
+
+      greetBtn.disabled = true;
+      greetBtn.textContent = 'Loading...';
+
+      try {
+        const response = await fetch('/api/greet', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+          greetingText.textContent = data.greeting;
+          inputSection.style.display = 'none';
+          greetingSection.classList.add('visible');
+        } else {
+          errorText.textContent = data.error || 'Something went wrong!';
+          errorText.classList.add('visible');
+        }
+      } catch (err) {
+        errorText.textContent = 'Could not connect to server. Please try again.';
+        errorText.classList.add('visible');
+      } finally {
+        greetBtn.disabled = false;
+        greetBtn.textContent = 'Say Hello! 🎉';
+      }
+    }
+
+    function resetForm() {
+      inputSection.style.display = 'block';
+      greetingSection.classList.remove('visible');
+      nameInput.value = '';
+      nameInput.focus();
+      errorText.classList.remove('visible');
+    }
+
+    // Auto-focus on load
+    nameInput.focus();
+  </script>
+</body>
+</html>
